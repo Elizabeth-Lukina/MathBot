@@ -1,0 +1,6 @@
+pytelegrambotapi==4.19.2
+sympy==1.12
+Pillow==10.3.0
+pytesseract==0.3.10
+telebot
+pytesseract
