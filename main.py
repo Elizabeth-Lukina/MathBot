@@ -1,441 +1,526 @@
-import telebot
 import logging
 import os
-import traceback
-from telebot import types
+import asyncio
+from typing import Dict, Any, Optional
 
-from config import logger, TELEGRAM_TOKEN
+from telegram import Update
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ContextTypes, filters
+)
+from telegram.constants import ParseMode
+
+# Импортируем модули бота
+from config import (
+    TELEGRAM_TOKEN, BOT_MESSAGES, EXAMPLE_PROBLEMS,
+    SUBSCRIPTION_PLANS, SOLUTION_MODES)
 from database import db
-from math_solver import math_solver
 from image_processor import image_processor
+from hybrid_solver import hybrid_solver
 from keyboard import bot_keyboard
+from utils import (
+    message_formatter, user_data_extractor,
+    validation_utils, security_utils
+)
 
-# Инициализация бота
-try:
-    bot = telebot.TeleBot(TELEGRAM_TOKEN)
-    logger.info("Бот инициализирован успешно")
-except Exception as e:
-    logger.error(f"Ошибка инициализации бота: {e}")
-    exit(1)
-
-
-def format_step_by_step_response(solution, problem_text):
-    """Форматирование ответа с шагами"""
-    try:
-        response_text = f"""
-✅ <b>Задача решена!</b>
-
-📝 <b>Задача:</b>
-<code>{problem_text[:100]}{'...' if len(problem_text) > 100 else ''}</code>
-
-🧮 <b>Тип:</b> {solution['problem_type']}
-⏱ <b>Время:</b> {solution['processing_time']:.1f} сек
-🎯 <b>Ответ:</b> <code>{solution['solution']}</code>
-
-📋 <b>Пошаговое решение:</b>
-"""
-
-        for i, step in enumerate(solution.get('steps', [])[:5], 1):
-            response_text += f"\n{i}. {step.get('description', 'Шаг')}"
-            if 'formula' in step:
-                response_text += f"\n   📐 <code>{step['formula']}</code>"
-
-        if solution.get('method_explanation'):
-            response_text += f"\n\n💡 <b>Метод решения:</b>\n{solution['method_explanation']}"
-
-        return response_text
-
-    except Exception as e:
-        logger.error(f"Ошибка форматирования ответа: {e}")
-        return "❌ Ошибка форматирования ответа"
+# Настройка логирования
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 
-@bot.message_handler(commands=['start'])
-def handle_start(message):
-    """Обработчик /start"""
-    try:
-        logger.info(f"Команда /start от пользователя {message.from_user.id}")
+class MathBot:
+    """Основной класс Telegram бота с логичной архитектурой"""
 
-        user_id = message.from_user.id
-        username = message.from_user.username
-        first_name = message.from_user.first_name
-        last_name = message.from_user.last_name
+    def __init__(self, token: str):
+        if not token or token == 'YOUR_TELEGRAM_BOT_TOKEN_HERE':
+            raise ValueError("Токен бота не установлен! Укажите TELEGRAM_TOKEN в config.py")
 
-        # Создаем пользователя если не существует
-        db.create_user(user_id, username, first_name, last_name)
+        self.token = token
+        self.application = None
 
-        welcome_text = f"""
-👋 <b>Добро пожаловать, {first_name}!</b>
+    async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработчик команды /start"""
+        try:
+            user_data = user_data_extractor.extract_user_data(update)
+            user_id = user_data['user_id']
 
-🤖 <b>MathBot Premium</b> - твой личный математический помощник!
+            # Создаем или обновляем пользователя в базе
+            db.create_or_update_user(user_data)
 
-✨ <b>Что я умею:</b>
-• Решать уравнения и системы
-• Находить производные и интегралы
-• Упрощать выражения
-• Работать с тригонометрией
-• Распознавать задачи с фото
+            # Получаем информацию о пользователе
+            user_info = db.get_user(user_id)
+            display_name = user_data_extractor.get_display_name(user_data)
+            free_solutions = user_info['free_solutions'] if user_info else 3
 
-🎁 <b>Бесплатно:</b> {db.get_user(user_id)['free_solutions']} решений
+            # Отправляем приветственное сообщение
+            welcome_message = message_formatter.format_welcome_message(display_name, free_solutions)
+            keyboard = bot_keyboard.get_main_menu()
 
-Выберите действие:
+            await update.message.reply_text(
+                welcome_message,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard
+            )
+
+            logger.info(f"Пользователь {security_utils.hash_user_id(user_id)} запустил бота")
+
+        except Exception as e:
+            logger.error(f"Ошибка в start_command: {e}")
+            await update.message.reply_text(
+                "❌ Произошла ошибка при запуске. Попробуйте еще раз.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+
+    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработчик команды /help"""
+        try:
+            help_message = BOT_MESSAGES['help']
+            keyboard = bot_keyboard.get_help_keyboard()
+
+            await update.message.reply_text(
+                help_message,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard
+            )
+
+        except Exception as e:
+            logger.error(f"Ошибка в help_command: {e}")
+            await update.message.reply_text(
+                "❌ Ошибка при показе справки.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+
+    async def handle_main_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработчик кнопок главного меню"""
+        try:
+            message_text = update.message.text
+
+            if message_text == "🎯 Решить задачу":
+                await self.handle_solution_mode_selection(update, context)
+            elif message_text == "💰 Баланс":
+                await self.show_balance(update, context)
+            elif message_text == "📊 История":
+                await self.show_history(update, context)
+            elif message_text == "🎓 Примеры":
+                await self.show_examples(update, context)
+            elif message_text == "💎 Тарифы":
+                await self.show_subscriptions(update, context)
+            elif message_text == "🆘 Помощь":
+                await self.help_command(update, context)
+            else:
+                await update.message.reply_text(
+                    "🤔 Не понимаю команду. Используйте кнопки меню или /help",
+                    reply_markup=bot_keyboard.get_main_menu()
+                )
+
+        except Exception as e:
+            logger.error(f"Ошибка обработки меню: {e}")
+            await update.message.reply_text(
+                "❌ Ошибка обработки команды.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+
+    async def handle_solution_mode_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Показать выбор режима решения"""
+        try:
+            keyboard = bot_keyboard.get_solution_mode_keyboard()
+
+            await update.message.reply_text(
+                BOT_MESSAGES['mode_selection'],
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard
+            )
+
+        except Exception as e:
+            logger.error(f"Ошибка выбора режима: {e}")
+
+    async def handle_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработчик inline кнопок"""
+        try:
+            query = update.callback_query
+            await query.answer()
+
+            data = query.data
+
+            # Обработка выбора режима
+            if data.startswith('mode_'):
+                await self.handle_mode_selection(query, context, data)
+            elif data.startswith('confirm_mode_'):
+                await self.handle_mode_confirmation(query, context, data)
+            elif data == "change_mode":
+                await self.handle_solution_mode_callback(query, context)
+
+            # Обработка ввода задачи
+            elif data == "input_photo":
+                await query.edit_message_text("📸 Отправьте фото задачи...")
+            elif data == "input_text":
+                await query.edit_message_text("📝 Введите текст задачи...")
+
+            # Навигация
+            elif data == "back_main":
+                await self.show_main_menu_callback(query, context)
+            elif data == "back_balance":
+                await self.show_balance_callback(query, context)
+
+            # Примеры задач
+            elif data.startswith("example_"):
+                await self.solve_example_problem(query, context, data)
+
+        except Exception as e:
+            logger.error(f"Ошибка обработки callback: {e}")
+            await query.edit_message_text("❌ Ошибка обработки запроса")
+
+    async def handle_mode_selection(self, query, context: ContextTypes.DEFAULT_TYPE, callback_data: str) -> None:
+        """Обработка выбора режима"""
+        mode = callback_data.replace('mode_', '')
+        context.user_data['selected_mode'] = mode
+
+        mode_info = SOLUTION_MODES.get(mode, {})
+        confirm_text = f"""
+{mode_info.get('emoji', '🎯')} *{mode_info.get('name', 'Режим')}*
+
+{mode_info.get('description', '')}
+
+✅ *Подтвердите выбор режима*
         """
 
-        bot.send_message(
-            message.chat.id,
-            welcome_text,
-            parse_mode='HTML',
-            reply_markup=bot_keyboard.main_menu()
+        keyboard = bot_keyboard.get_confirm_mode_keyboard(mode)
+        await query.edit_message_text(
+            confirm_text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=keyboard
         )
 
-    except Exception as e:
-        logger.error(f"Ошибка в /start: {e}\n{traceback.format_exc()}")
+    async def handle_mode_confirmation(self, query, context: ContextTypes.DEFAULT_TYPE, callback_data: str) -> None:
+        """Обработка подтверждения режима"""
+        mode = callback_data.replace('confirm_mode_', '')
+        context.user_data['solution_mode'] = mode
 
+        # Сообщения подтверждения
+        mode_messages = {
+            'quick': BOT_MESSAGES['quick_mode_selected'],
+            'exam': BOT_MESSAGES['exam_mode_selected'],
+            'tutor': BOT_MESSAGES['tutor_mode_selected']
+        }
 
-@bot.message_handler(func=lambda message: message.text == "🎯 Решить задачу")
-def handle_solve_problem(message):
-    """Обработчик кнопки Решить задачу"""
-    try:
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("📝 Текст", callback_data="input_text"))
-        markup.add(types.InlineKeyboardButton("📸 Фото", callback_data="input_photo"))
-
-        bot.send_message(
-            message.chat.id,
-            "📝 <b>Выберите способ ввода задачи:</b>",
-            parse_mode='HTML',
-            reply_markup=markup
+        await query.edit_message_text(
+            mode_messages.get(mode, "✅ Режим выбран"),
+            parse_mode=ParseMode.MARKDOWN
         )
-    except Exception as e:
-        logger.error(f"Ошибка в handle_solve_problem: {e}")
 
+        # Предлагаем ввести задачу
+        keyboard = bot_keyboard.get_input_type_keyboard()
+        await query.message.reply_text(
+            "📝 Выберите способ ввода задачи:",
+            reply_markup=keyboard
+        )
 
-@bot.message_handler(func=lambda message: message.text == "💰 Мой баланс")
-def handle_balance(message):
-    """Обработчик кнопки Мой баланс"""
-    try:
-        user = db.get_user(message.from_user.id)
-        if user:
-            balance_text = f"""
-💼 <b>Ваш баланс:</b>
+    async def handle_text_problem(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработка текстовой математической задачи"""
+        try:
+            user_data = user_data_extractor.extract_user_data(update)
+            user_id = user_data['user_id']
+            problem_text = update.message.text
 
-🎁 Бесплатные решения: {user['free_solutions']}
-💳 Платные решения: {user['paid_solutions']}
-📊 Всего решено: {user['total_problems_solved']}
-            """
+            # Проверяем баланс
+            if not db.use_solution(user_id):
+                await update.message.reply_text(
+                    BOT_MESSAGES['no_solutions'],
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=bot_keyboard.get_balance_keyboard(db.get_user_balance(user_id))
+                )
+                return
 
-            bot.send_message(
-                message.chat.id,
-                balance_text,
-                parse_mode='HTML'
+            # Получаем выбранный режим (по умолчанию - exam)
+            solution_mode = context.user_data.get('solution_mode', 'exam')
+
+            # Отправляем сообщение о обработке
+            processing_message = await update.message.reply_text(
+                BOT_MESSAGES['solving'],
+                parse_mode=ParseMode.MARKDOWN
             )
-    except Exception as e:
-        logger.error(f"Ошибка в handle_balance: {e}")
 
+            # Решаем задачу с выбранным режимом
+            solution_result = await hybrid_solver.solve_with_mode(problem_text, solution_mode)
 
-@bot.message_handler(func=lambda message: message.text == "💳 Купить решения")
-def handle_buy_solutions(message):
-    """Обработчик кнопки Купить решения"""
-    try:
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("🔔 Подписки", callback_data="buy_subscription"))
-        markup.add(types.InlineKeyboardButton("📦 Пакеты решений", callback_data="buy_package"))
+            if solution_result['success']:
+                # Сохраняем решение
+                solution_data = {
+                    'user_id': user_id,
+                    'problem_text': problem_text,
+                    'problem_type': solution_result.get('problem_type', 'неизвестный'),
+                    'solution_method': 'hybrid',
+                    'solution_result': solution_result['solution'],
+                    'explanation': solution_result.get('explanation', ''),
+                    'processing_time': solution_result.get('processing_time', 0),
+                    'success': True
+                }
+                db.save_solution(solution_data)
 
-        bot.send_message(
-            message.chat.id,
-            "🛒 <b>Выберите тип покупки:</b>",
-            parse_mode='HTML',
-            reply_markup=markup
-        )
-    except Exception as e:
-        logger.error(f"Ошибка в handle_buy_solutions: {e}")
+                # Форматируем ответ
+                solution_message = message_formatter.format_solution_message(solution_data)
+                keyboard = bot_keyboard.get_solution_result_keyboard()
 
+                await processing_message.edit_text(
+                    solution_message,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=keyboard
+                )
+            else:
+                await processing_message.edit_text(
+                    "❌ Не удалось решить задачу. Попробуйте другой режим или проверьте условие.",
+                    parse_mode=ParseMode.MARKDOWN
+                )
 
-@bot.message_handler(func=lambda message: message.text == "📊 История")
-def handle_history(message):
-    """Обработчик кнопки История"""
-    try:
-        history = db.get_user_history(message.from_user.id)
-        if history:
-            history_text = "📊 <b>Последние решения:</b>\n\n"
-            for i, item in enumerate(history, 1):
-                history_text += f"{i}. {item['problem_text'][:50]}...\n"
-        else:
-            history_text = "📝 История решений пуста"
-
-        bot.send_message(
-            message.chat.id,
-            history_text,
-            parse_mode='HTML'
-        )
-    except Exception as e:
-        logger.error(f"Ошибка в handle_history: {e}")
-
-
-@bot.message_handler(func=lambda message: message.text == "🆘 Помощь")
-def handle_help(message):
-    """Обработчик кнопки Помощь"""
-    try:
-        help_text = """
-🆘 <b>Помощь по боту:</b>
-
-📝 <b>Как отправить задачу:</b>
-• Напишите текст задачи
-• Или отправьте фото с задачей
-
-🧮 <b>Поддерживаемые типы задач:</b>
-• Уравнения и системы
-• Производные и интегралы
-• Тригонометрические выражения
-• Арифметические вычисления
-
-💳 <b>Оплата и подписки:</b>
-• Бесплатно: 3 решения
-• Пакеты: 10/25/50 решений
-• Подписки: Базовая/Премиум
-
-📞 <b>Поддержка:</b> @username
-        """
-
-        bot.send_message(
-            message.chat.id,
-            help_text,
-            parse_mode='HTML'
-        )
-    except Exception as e:
-        logger.error(f"Ошибка в handle_help: {e}")
-
-
-@bot.message_handler(content_types=['text'])
-def handle_text_messages(message):
-    """Обработка текстовых сообщений"""
-    try:
-        logger.info(f"Текстовое сообщение от {message.from_user.id}: {message.text[:50]}...")
-
-        user_id = message.from_user.id
-        problem_text = message.text
-
-        # Проверяем возможность решения
-        if not db.can_user_solve(user_id):
-            logger.warning(f"У пользователя {user_id} закончились решения")
-            bot.send_message(
-                message.chat.id,
-                "❌ <b>Закончились бесплатные решения!</b>\n\n"
-                "💳 Купите пакет решений или подписку",
-                parse_mode='HTML',
-                reply_markup=bot_keyboard.buy_menu()
+        except Exception as e:
+            logger.error(f"Ошибка решения текстовой задачи: {e}")
+            await update.message.reply_text(
+                "❌ Ошибка при решении задачи.",
+                parse_mode=ParseMode.MARKDOWN
             )
+
+    async def handle_photo_problem(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработка задачи с фото"""
+        try:
+            user_data = user_data_extractor.extract_user_data(update)
+            user_id = user_data['user_id']
+
+            # Проверяем баланс
+            if not db.use_solution(user_id):
+                await update.message.reply_text(
+                    BOT_MESSAGES['no_solutions'],
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                return
+
+            processing_message = await update.message.reply_text(
+                BOT_MESSAGES['ocr_processing'],
+                parse_mode=ParseMode.MARKDOWN
+            )
+
+            # Обрабатываем фото
+            photo = update.message.photo[-1]
+            photo_file = await photo.get_file()
+            photo_data = await photo_file.download_as_bytearray()
+
+            extracted_text = image_processor.process_image(bytes(photo_data))
+
+            if not extracted_text:
+                await processing_message.edit_text(BOT_MESSAGES['error_ocr'])
+                return
+
+            if not image_processor.validate_mathematical_content(extracted_text):
+                await processing_message.edit_text(BOT_MESSAGES['error_no_math'])
+                return
+
+            # Решаем задачу
+            solution_mode = context.user_data.get('solution_mode', 'exam')
+            await processing_message.edit_text(BOT_MESSAGES['solving'])
+
+            solution_result = await hybrid_solver.solve_with_mode(extracted_text, solution_mode)
+
+            if solution_result['success']:
+                solution_data = {
+                    'user_id': user_id,
+                    'problem_text': extracted_text,
+                    'problem_type': solution_result.get('problem_type', 'неизвестный'),
+                    'solution_method': 'hybrid',
+                    'solution_result': solution_result['solution'],
+                    'explanation': solution_result.get('explanation', ''),
+                    'processing_time': solution_result.get('processing_time', 0),
+                    'success': True
+                }
+                db.save_solution(solution_data)
+
+                solution_message = message_formatter.format_solution_message(solution_data)
+                keyboard = bot_keyboard.get_solution_result_keyboard()
+
+                await processing_message.edit_text(
+                    solution_message,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=keyboard
+                )
+            else:
+                await processing_message.edit_text(BOT_MESSAGES['error_solving'])
+
+        except Exception as e:
+            logger.error(f"Ошибка обработки фото: {e}")
+            await update.message.reply_text(BOT_MESSAGES['error_general'])
+
+    # Дополнительные методы (упрощенные)
+    async def show_balance(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Показать баланс"""
+        user_data = user_data_extractor.extract_user_data(update)
+        balance_data = db.get_user_balance(user_data['user_id'])
+        username = user_data_extractor.get_display_name(user_data)
+
+        balance_message = message_formatter.format_balance_message(balance_data, username)
+        keyboard = bot_keyboard.get_balance_keyboard(balance_data)
+
+        await update.message.reply_text(
+            balance_message,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=keyboard
+        )
+
+    async def show_history(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Показать историю"""
+        user_data = user_data_extractor.extract_user_data(update)
+        history_data = db.get_user_history(user_data['user_id'])
+        history_message = message_formatter.format_history_message(history_data)
+
+        await update.message.reply_text(
+            history_message,
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+    async def show_examples(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Показать примеры"""
+        keyboard = bot_keyboard.get_examples_keyboard()
+        examples_text = "🎓 *Примеры задач:*\n\n" + "\n".join(
+            f"{i + 1}. {example}" for i, example in enumerate(EXAMPLE_PROBLEMS[:3])
+        )
+
+        await update.message.reply_text(
+            examples_text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=keyboard
+        )
+
+    async def show_subscriptions(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Показать подписки"""
+        keyboard = bot_keyboard.get_subscription_plans_keyboard()
+        subscriptions_text = "💎 *Тарифы:*\n\n" + "\n".join(
+            f"• {plan['name']} - {plan['price']}{plan['currency']}/мес"
+            for plan in SUBSCRIPTION_PLANS.values()
+        )
+
+        await update.message.reply_text(
+            subscriptions_text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=keyboard
+        )
+
+    # Callback методы
+    async def handle_solution_mode_callback(self, query, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Показать выбор режима из callback"""
+        keyboard = bot_keyboard.get_solution_mode_keyboard()
+        await query.edit_message_text(
+            BOT_MESSAGES['mode_selection'],
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=keyboard
+        )
+
+    async def show_main_menu_callback(self, query, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Показать главное меню из callback"""
+        await query.edit_message_text(
+            "🏠 *Главное меню* - выберите действие:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=bot_keyboard.get_main_menu()
+        )
+
+    async def show_balance_callback(self, query, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Показать баланс из callback"""
+        user_data = user_data_extractor.extract_user_data(query)
+        balance_data = db.get_user_balance(user_data['user_id'])
+        username = user_data_extractor.get_display_name(user_data)
+
+        balance_message = message_formatter.format_balance_message(balance_data, username)
+        keyboard = bot_keyboard.get_balance_keyboard(balance_data)
+
+        await query.edit_message_text(
+            balance_message,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=keyboard
+        )
+
+    async def solve_example_problem(self, query, context: ContextTypes.DEFAULT_TYPE, callback_data: str) -> None:
+        """Решить пример задачи"""
+        try:
+            example_index = int(callback_data.split('_')[1])
+            if 0 <= example_index < len(EXAMPLE_PROBLEMS):
+                problem_text = EXAMPLE_PROBLEMS[example_index]
+                await query.edit_message_text(f"📝 Пример: {problem_text}")
+        except Exception as e:
+            logger.error(f"Ошибка решения примера: {e}")
+
+    # В классе MathBot заменяем эти методы:
+
+    async def balance_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработчик команды /balance"""
+        await self.show_balance(update, context)
+
+    async def history_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработчик команды /history"""
+        await self.show_history(update, context)
+
+    # НА:
+    async def handle_balance_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработчик команды /balance"""
+        await self.show_balance(update, context)
+
+    async def handle_history_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработчик команды /history"""
+        await self.show_history(update, context)
+
+    def setup_handlers(self) -> None:
+        """Настройка обработчиков"""
+        if not self.application:
             return
 
-        # Используем решение
-        if not db.use_solution(user_id):
-            logger.error(f"Ошибка использования решения у пользователя {user_id}")
-            bot.send_message(
-                message.chat.id,
-                "❌ <b>Ошибка использования решения</b>",
-                parse_mode='HTML'
-            )
-            return
+        # Команды
+        self.application.add_handler(CommandHandler("start", self.start_command))
+        self.application.add_handler(CommandHandler("help", self.help_command))
+        self.application.add_handler(CommandHandler("balance", self.handle_balance_command))
+        self.application.add_handler(CommandHandler("history", self.handle_history_command))
 
-        processing_msg = bot.send_message(
-            message.chat.id,
-            "🧠 <b>Решаю задачу...</b>",
-            parse_mode='HTML'
-        )
+        # Обработчики сообщений
+        self.application.add_handler(MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            self.handle_main_menu
+        ))
 
-        # Решаем задачу
-        logger.debug(f"Передаем задачу решателю: {problem_text}")
-        solution = math_solver.solve_with_steps(problem_text)
-        logger.debug(f"Результат решения: {solution}")
+        # Отдельный обработчик для математических задач
+        self.application.add_handler(MessageHandler(
+            filters.TEXT & filters.Regex(r'[0-9+\-*/=xπ∫]'),
+            self.handle_text_problem
+        ))
 
-        if solution['success']:
-            # Сохраняем и отправляем ответ
-            db.save_solution({
-                'user_id': user_id,
-                'problem_text': problem_text,
-                'solution_result': str(solution['solution']),
-                'problem_type': solution.get('problem_type', 'unknown'),
-                'processing_time': solution.get('processing_time', 0),
-                'steps_count': len(solution.get('steps', []))
-            })
+        self.application.add_handler(MessageHandler(
+            filters.PHOTO,
+            self.handle_photo_problem
+        ))
 
-            response_text = format_step_by_step_response(solution, problem_text)
+        # Обработчик callback запросов
+        self.application.add_handler(CallbackQueryHandler(self.handle_callback_query))
 
-            bot.edit_message_text(
-                response_text,
-                message.chat.id,
-                processing_msg.message_id,
-                parse_mode='HTML'
-            )
+    def run(self):
+        """Запуск бота"""
+        try:
+            self.application = Application.builder().token(self.token).build()
+            self.setup_handlers()
 
-        else:
-            # Возвращаем решение
-            db.refund_solution(user_id)
-            error_msg = "❌ <b>Не удалось решить задачу</b>"
-            if 'error' in solution:
-                error_msg += f"\n\nОшибка: {solution['error']}"
-                logger.warning(f"Ошибка решения: {solution['error']}")
+            print("🤖 МатБот запущен!")
+            print("📱 Используйте /start в Telegram")
 
-            bot.edit_message_text(
-                error_msg,
-                message.chat.id,
-                processing_msg.message_id,
-                parse_mode='HTML'
-            )
+            self.application.run_polling()
 
-    except Exception as e:
-        logger.error(f"Критическая ошибка в handle_text_messages: {e}\n{traceback.format_exc()}")
-        bot.send_message(
-            message.chat.id,
-            "❌ <b>Произошла критическая ошибка</b>\n\nПопробуйте еще раз или обратитесь в поддержку",
-            parse_mode='HTML'
-        )
+        except Exception as e:
+            logger.error(f"Ошибка запуска: {e}")
+            print(f"❌ Ошибка: {e}")
 
 
-@bot.message_handler(content_types=['photo'])
-def handle_photos(message):
-    """Обработка фотографий"""
-    try:
-        logger.info(f"Фото от пользователя {message.from_user.id}")
-
-        # Проверяем возможность решения
-        if not db.can_user_solve(message.from_user.id):
-            bot.send_message(
-                message.chat.id,
-                "❌ <b>Закончились бесплатные решения!</b>",
-                parse_mode='HTML',
-                reply_markup=bot_keyboard.buy_menu()
-            )
-            return
-
-        # Скачиваем фото
-        file_info = bot.get_file(message.photo[-1].file_id)
-        downloaded_file = bot.download_file(file_info.file_path)
-
-        # Обрабатываем изображение
-        processing_msg = bot.send_message(
-            message.chat.id,
-            "🔍 <b>Распознаю текст с фото...</b>",
-            parse_mode='HTML'
-        )
-
-        recognized_text = image_processor.process_image(downloaded_file)
-
-        if not recognized_text or not image_processor.is_mathematical(recognized_text):
-            bot.edit_message_text(
-                "❌ <b>Не удалось распознать математическую задачу</b>\n\n"
-                "Попробуйте отправить более четкое фото или введите текст вручную",
-                message.chat.id,
-                processing_msg.message_id,
-                parse_mode='HTML'
-            )
-            return
-
-        # Используем решение
-        if not db.use_solution(message.from_user.id):
-            bot.edit_message_text(
-                "❌ <b>Ошибка использования решения</b>",
-                message.chat.id,
-                processing_msg.message_id,
-                parse_mode='HTML'
-            )
-            return
-
-        # Решаем задачу
-        bot.edit_message_text(
-            "🧠 <b>Решаю задачу...</b>",
-            message.chat.id,
-            processing_msg.message_id,
-            parse_mode='HTML'
-        )
-
-        solution = math_solver.solve_with_steps(recognized_text)
-
-        if solution['success']:
-            # Сохраняем решение
-            db.save_solution({
-                'user_id': message.from_user.id,
-                'problem_text': recognized_text,
-                'solution_result': str(solution['solution']),
-                'problem_type': solution.get('problem_type', 'unknown'),
-                'processing_time': solution.get('processing_time', 0),
-                'steps_count': len(solution.get('steps', [])),
-                'image_path': file_info.file_path
-            })
-
-            response_text = f"📸 <b>Распознанный текст:</b>\n<code>{recognized_text[:100]}...</code>\n\n"
-            response_text += format_step_by_step_response(solution, recognized_text)
-
-            bot.edit_message_text(
-                response_text,
-                message.chat.id,
-                processing_msg.message_id,
-                parse_mode='HTML'
-            )
-
-        else:
-            # Возвращаем решение
-            db.refund_solution(message.from_user.id)
-            error_msg = "❌ <b>Не удалось решить задачу</b>"
-            if 'error' in solution:
-                error_msg += f"\n\nОшибка: {solution['error']}"
-
-            bot.edit_message_text(
-                error_msg,
-                message.chat.id,
-                processing_msg.message_id,
-                parse_mode='HTML'
-            )
-
-    except Exception as e:
-        logger.error(f"Ошибка обработки фото: {e}\n{traceback.format_exc()}")
-        bot.send_message(
-            message.chat.id,
-            "❌ <b>Ошибка обработки фото</b>",
-            parse_mode='HTML'
-        )
-
-
-@bot.callback_query_handler(func=lambda call: True)
-def handle_callback(call):
-    """Обработка callback-запросов"""
-    try:
-        if call.data == "input_text":
-            bot.send_message(
-                call.message.chat.id,
-                "📝 <b>Введите текст задачи:</b>",
-                parse_mode='HTML'
-            )
-        elif call.data == "input_photo":
-            bot.send_message(
-                call.message.chat.id,
-                "📸 <b>Отправьте фото с задачей:</b>",
-                parse_mode='HTML'
-            )
-        elif call.data == "solve_another":
-            handle_solve_problem(call.message)
-        elif call.data == "buy_more":
-            handle_buy_solutions(call.message)
-
-    except Exception as e:
-        logger.error(f"Ошибка в callback: {e}")
-
-
-def run_bot():
-    """Запуск бота с обработкой исключений"""
-    try:
-        logger.info("Запуск MathBot Premium...")
-        print("🚀 Бот запускается...")
-        print("📋 Логи пишутся в папку debug_logs/")
-
-        bot.polling(none_stop=True, interval=0, timeout=60)
-
-    except Exception as e:
-        logger.critical(f"Критическая ошибка запуска бота: {e}\n{traceback.format_exc()}")
-        print(f"❌ Критическая ошибка: {e}")
+def main():
+    """Главная функция"""
+    if not TELEGRAM_TOKEN:
+        raise ValueError("""
+    ❌ TELEGRAM_TOKEN не найден!""")
+    bot = MathBot(TELEGRAM_TOKEN)
+    bot.run()
 
 
 if __name__ == "__main__":
-    # Создаем папку для логов
-    os.makedirs('debug_logs', exist_ok=True)
-    run_bot()
+    main()
