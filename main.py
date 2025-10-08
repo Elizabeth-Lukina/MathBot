@@ -29,6 +29,7 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 class MathBot:
@@ -221,6 +222,8 @@ class MathBot:
     async def handle_text_problem(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Обработка текстовой математической задачи"""
         try:
+            print(f"Получена задача: {update.message.text}")  # Отладочный вывод
+
             user_data = user_data_extractor.extract_user_data(update)
             user_id = user_data['user_id']
             problem_text = update.message.text
@@ -244,7 +247,7 @@ class MathBot:
             )
 
             # Решаем задачу с выбранным режимом
-            solution_result = await hybrid_solver.solve_with_mode(problem_text, solution_mode)
+            solution_result = hybrid_solver.solve_with_mode(problem_text, solution_mode)
 
             if solution_result['success']:
                 # Сохраняем решение
@@ -320,7 +323,7 @@ class MathBot:
             solution_mode = context.user_data.get('solution_mode', 'exam')
             await processing_message.edit_text(BOT_MESSAGES['solving'])
 
-            solution_result = await hybrid_solver.solve_with_mode(extracted_text, solution_mode)
+            solution_result = hybrid_solver.solve_with_mode(extracted_text, solution_mode)
 
             if solution_result['success']:
                 solution_data = {
@@ -424,18 +427,30 @@ class MathBot:
 
     async def show_balance_callback(self, query, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Показать баланс из callback"""
-        user_data = user_data_extractor.extract_user_data(query)
-        balance_data = db.get_user_balance(user_data['user_id'])
-        username = user_data_extractor.get_display_name(user_data)
+        try:
+            # Правильно получаем user_data из callback query
+            user_data = {
+                'user_id': query.from_user.id,
+                'username': query.from_user.username,
+                'first_name': query.from_user.first_name,
+                'last_name': query.from_user.last_name,
+                'language_code': query.from_user.language_code or 'ru'
+            }
 
-        balance_message = message_formatter.format_balance_message(balance_data, username)
-        keyboard = bot_keyboard.get_balance_keyboard(balance_data)
+            balance_data = db.get_user_balance(user_data['user_id'])
+            username = user_data_extractor.get_display_name(user_data)
 
-        await query.edit_message_text(
-            balance_message,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=keyboard
-        )
+            balance_message = message_formatter.format_balance_message(balance_data, username)
+            keyboard = bot_keyboard.get_balance_keyboard(balance_data)
+
+            await query.edit_message_text(
+                balance_message,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard
+            )
+        except Exception as e:
+            logger.error(f"Ошибка в show_balance_callback: {e}")
+            await query.edit_message_text("❌ Ошибка получения баланса")
 
     async def solve_example_problem(self, query, context: ContextTypes.DEFAULT_TYPE, callback_data: str) -> None:
         """Решить пример задачи"""
@@ -477,24 +492,25 @@ class MathBot:
         self.application.add_handler(CommandHandler("balance", self.handle_balance_command))
         self.application.add_handler(CommandHandler("history", self.handle_history_command))
 
-        # Обработчики сообщений
+        # Обработчик для математических задач ДО главного меню
+        self.application.add_handler(MessageHandler(
+            filters.TEXT & filters.Regex(r'[0-9+\-*/=xXyYzZ]'),  # Сначала ловим математику
+            self.handle_text_problem
+        ))
+
+        # Главное меню - после математики
         self.application.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND,
             self.handle_main_menu
         ))
 
-        # Отдельный обработчик для математических задач
-        self.application.add_handler(MessageHandler(
-            filters.TEXT & filters.Regex(r'[0-9+\-*/=xπ∫]'),
-            self.handle_text_problem
-        ))
-
+        # Фото
         self.application.add_handler(MessageHandler(
             filters.PHOTO,
             self.handle_photo_problem
         ))
 
-        # Обработчик callback запросов
+        # Callback запросы
         self.application.add_handler(CallbackQueryHandler(self.handle_callback_query))
 
     def run(self):

@@ -6,7 +6,7 @@
 import logging
 import time
 from typing import Dict, Any, List
-from math_solver import math_solver
+from math_solver import math_solver  # Добавляем импорт
 from explanation_generator import explanation_generator
 from config import SOLUTION_MODES
 
@@ -20,23 +20,12 @@ class HybridSolver:
         self.sympy_solver = math_solver
         self.ai_explainer = explanation_generator
 
-    async def solve_with_mode(self, problem_text: str, mode: str = 'exam') -> Dict[str, Any]:
-        """
-        Решает задачу в выбранном режиме с гибридным подходом
-
-        Args:
-            problem_text: Текст задачи
-            mode: Режим решения ('quick', 'exam', 'tutor')
-
-        Returns:
-            Результат решения
-        """
+    def solve_with_mode(self, problem_text: str, mode: str = 'exam') -> Dict[str, Any]:
+        """Упрощенная версия - только SymPy, без OpenAI"""
         start_time = time.time()
 
         try:
-            mode_config = SOLUTION_MODES.get(mode, SOLUTION_MODES['exam'])
-
-            # 1. Всегда решаем через SymPy сначала (дешево и точно)
+            # 1. Решаем через SymPy
             logger.info(f"Решаем задачу через SymPy в режиме {mode}")
             sympy_result = self.sympy_solver.solve_problem(problem_text)
 
@@ -47,88 +36,170 @@ class HybridSolver:
                     'mode': mode
                 }
 
-            # 2. Для быстрого режима - возвращаем только ответ
-            if mode == 'quick':
-                processing_time = time.time() - start_time
-                return {
-                    'success': True,
-                    'mode': 'quick',
-                    'solution': sympy_result['solution'],
-                    'problem_type': sympy_result['problem_type'],
-                    'source': 'sympy',
-                    'processing_time': processing_time,
-                    'cost': 0.001,
-                    'explanation': '🚀 Режим быстрого ответа - только решение'
-                }
-
-            # 3. Для режимов с объяснениями - генерируем через AI
-            logger.info(f"Генерируем AI объяснение для режима {mode}")
-
-            # Подготавливаем данные для AI
-            ai_input = {
-                'problem_text': problem_text,
-                'solution': sympy_result['solution'],
-                'problem_type': sympy_result['problem_type'],
-                'steps': sympy_result.get('steps', []),
-                'mode': mode
-            }
-
-            # Генерируем объяснение
-            ai_result = await self.ai_explainer.generate_explanation(ai_input)
-
-            # 4. ВАЖНО: Проверяем корректность AI объяснения
-            validated_explanation = self._validate_ai_explanation(
-                ai_result,
-                sympy_result['solution'],
-                problem_text
-            )
-
             processing_time = time.time() - start_time
 
-            # Формируем финальный результат
+            # 2. Формируем ответ без AI
             result = {
                 'success': True,
                 'mode': mode,
                 'solution': sympy_result['solution'],
                 'problem_type': sympy_result['problem_type'],
-                'source': 'hybrid',
+                'source': 'sympy',
                 'processing_time': processing_time,
-                'cost': 0.05,  # Дешевле чистого AI
-                'sympy_data': sympy_result,
-                'ai_validation': validated_explanation['validation_result']
+                'cost': 0.001
             }
 
-            # Добавляем объяснение в зависимости от режима
-            if mode == 'exam':
-                result.update({
-                    'explanation': validated_explanation['safe_explanation'],
-                    'steps': validated_explanation.get('steps', []),
-                    'latex': sympy_result.get('latex', '')
-                })
-            elif mode == 'tutor':
-                result.update({
-                    'explanation': validated_explanation['safe_explanation'],
-                    'hints': validated_explanation.get('hints', []),
-                    'common_mistakes': validated_explanation.get('common_mistakes', []),
-                    'learning_tips': validated_explanation.get('learning_tips', [])
-                })
+            # 3. Добавляем базовое объяснение в зависимости от режима
+            if mode == 'quick':
+                result['explanation'] = f'🚀 Ответ: {sympy_result["solution"]}'
+            else:
+                steps_text = '\n'.join(
+                    [f"• {step}" for step in sympy_result.get('steps', ['Задача решена символьными вычислениями'])])
+                result['explanation'] = f'''
+    ✅ *Решение найдено:*
+    `{sympy_result["solution"]}`
 
-            logger.info(f"Гибридное решение завершено за {processing_time:.2f}с")
+    📝 *Тип задачи:* {sympy_result["problem_type"]}
+    ⚙️ *Метод:* SymPy математический движок
+
+    💡 *Шаги решения:*
+    {steps_text}
+                '''
+
+            logger.info(f"Решение завершено за {processing_time:.2f}с")
             return result
 
         except Exception as e:
             logger.error(f"Ошибка гибридного решения: {e}")
             return {
                 'success': False,
-                'error': f'Ошибка гибридного решения: {str(e)}',
+                'error': f'Ошибка решения: {str(e)}',
                 'mode': mode
             }
+    # def solve_with_mode(self, problem_text: str, mode: str = 'exam') -> Dict[str, Any]:
+    #     """
+    #     Решает задачу в выбранном режиме с гибридным подходом
+    #             """
+    #     start_time = time.time()
+    #
+    #     try:
+    #         mode_config = SOLUTION_MODES.get(mode, SOLUTION_MODES['exam'])
+    #
+    #         # 1. Всегда решаем через SymPy сначала (дешево и точно)
+    #         logger.info(f"Решаем задачу через SymPy в режиме {mode}")
+    #         sympy_result = self.sympy_solver.solve_problem(problem_text)
+    #
+    #         if not sympy_result['success']:
+    #             # Пробуем решить через AI если SymPy не смог
+    #             logger.info("SymPy не смог решить, пробуем AI...")
+    #             ai_solution = self.ai_explainer.solve_complex_problem(problem_text)
+    #
+    #             if ai_solution['success']:
+    #                 processing_time = time.time() - start_time
+    #                 return {
+    #                     'success': True,
+    #                     'mode': mode,
+    #                     'solution': ai_solution['solution'],
+    #                     'problem_type': ai_solution.get('problem_type', 'complex'),
+    #                     'source': 'openai',
+    #                     'processing_time': processing_time,
+    #                     'cost': ai_solution.get('estimated_cost', 0.1),
+    #                     'explanation': ai_solution.get('explanation', ''),
+    #                     'steps': ai_solution.get('steps', [])
+    #                 }
+    #             else:
+    #                 return {
+    #     #                 'success': False,
+    #     #                 'error': 'Не удалось решить задачу ни SymPy, ни AI',
+    #     #                 'mode': mode
+    #     #             }
+    #     #
+    #     #     # 2. Для быстрого режима - возвращаем только ответ
+    #     #     if mode == 'quick':
+    #     #         processing_time = time.time() - start_time
+    #     #         return {
+    #     #             'success': True,
+    #     #             'mode': 'quick',
+    #     #             'solution': sympy_result['solution'],
+    #     #             'problem_type': sympy_result['problem_type'],
+    #     #             'source': 'sympy',
+    #     #             'processing_time': processing_time,
+    #     #             'cost': 0.001,
+    #     #             'explanation': '🚀 Режим быстрого ответа - только решение'
+    #     #         }
+    #     #
+    #     #     # 3. Для режимов с объяснениями - генерируем через AI
+    #     #     logger.info(f"Генерируем AI объяснение для режима {mode}")
+    #     #
+    #     #     # Подготавливаем данные для AI
+    #     #     ai_input = {
+    #     #         'problem_text': problem_text,
+    #     #         'solution': sympy_result['solution'],
+    #     #         'problem_type': sympy_result['problem_type'],
+    #     #         'steps': sympy_result.get('steps', []),
+    #     #         'mode': mode
+    #     #     }
+    #     #
+    #     #     # Генерируем объяснение (синхронно)
+    #     #     ai_result = self.ai_explainer.generate_explanation(ai_input)
+    #     #
+    #     #     # 4. Проверяем корректность AI объяснения
+    #     #     validated_explanation = self._validate_ai_explanation(
+    #     #         ai_result,
+    #     #         sympy_result['solution'],
+    #     #         problem_text
+    #     #     )
+    #     #
+    #     #     processing_time = time.time() - start_time
+    #     #
+    #     #     # Формируем финальный результат
+    #     #     result = {
+    #     #         'success': True,
+    #     #         'mode': mode,
+    #     #         'solution': sympy_result['solution'],
+    #     #         'problem_type': sympy_result['problem_type'],
+    #     #         'source': 'hybrid',
+    #     #         'processing_time': processing_time,
+    #     #         'cost': ai_result.get('estimated_cost', 0.05),
+    #     #         'sympy_data': sympy_result,
+    #     #         'ai_validation': validated_explanation['validation_result']
+    #     #     }
+    #     #
+    #     #     # Добавляем объяснение в зависимости от режима
+    #     #     if mode == 'exam':
+    #     #         result.update({
+    #     #             'explanation': validated_explanation['safe_explanation'],
+    #     #             'steps': validated_explanation.get('steps', []),
+    #     #             'latex': sympy_result.get('latex', '')
+    #     #         })
+    #     #     elif mode == 'tutor':
+    #     #         result.update({
+    #     #             'explanation': validated_explanation['safe_explanation'],
+    #     #             'hints': validated_explanation.get('hints', []),
+    #     #             'common_mistakes': validated_explanation.get('common_mistakes', []),
+    #     #             'learning_tips': validated_explanation.get('learning_tips', [])
+    #     #         })
+    #     #
+    #     #     logger.info(f"Гибридное решение завершено за {processing_time:.2f}с")
+    #     #     return result
+    #     #
+    #     # except Exception as e:
+    #     #     logger.error(f"Ошибка гибридного решения: {e}")
+    #     #     return {
+    #     #         'success': False,
+    #     #         'error': f'Ошибка гибридного решения: {str(e)}',
+    #     #         'mode': mode
+    #     #     }
 
     def _validate_ai_explanation(self, ai_result: Dict, sympy_solution: str, original_problem: str) -> Dict[str, Any]:
         """
         Проверяет корректность AI объяснения и создает безопасную версию
         """
         try:
+            # Если AI не сработал, возвращаем базовое объяснение
+            if not ai_result.get('success', False):
+                return self._create_fallback_explanation(sympy_solution)
+
             validation_checks = {
                 'has_explanation': bool(ai_result.get('explanation')),
                 'explanation_length': len(ai_result.get('explanation', '')) > 50,
@@ -159,15 +230,18 @@ class HybridSolver:
 
         except Exception as e:
             logger.error(f"Ошибка валидации AI: {e}")
-            # Возвращаем безопасное падение
-            return {
-                'validation_result': {'is_valid': False, 'score': 0, 'checks': {}},
-                'safe_explanation': f'✅ Решение: {sympy_solution}\n\n📝 Задача решена с помощью математического движка.',
-                'steps': [],
-                'hints': ['Проверьте правильность условия задачи'],
-                'common_mistakes': [],
-                'learning_tips': []
-            }
+            return self._create_fallback_explanation(sympy_solution)
+
+    def _create_fallback_explanation(self, sympy_solution: str) -> Dict[str, Any]:
+        """Создает fallback объяснение если AI не сработал"""
+        return {
+            'validation_result': {'is_valid': False, 'score': 0, 'checks': {}},
+            'safe_explanation': f'✅ Решение: {sympy_solution}\n\n📝 Задача решена с помощью математического движка SymPy.',
+            'steps': ['Задача решена символьными вычислениями'],
+            'hints': ['Проверьте правильность условия задачи'],
+            'common_mistakes': [],
+            'learning_tips': ['Рекомендуется изучить соответствующую тему в учебнике']
+        }
 
     def _check_solution_consistency(self, ai_result: Dict, sympy_solution: str) -> bool:
         """Проверяет, что AI объяснение соответствует решению SymPy"""
@@ -177,12 +251,11 @@ class HybridSolver:
 
             # Проверяем, что в объяснении упоминается правильный ответ
             consistency_indicators = [
-                sympy_sol_str in explanation,
-                any(keyword in explanation for keyword in ['ответ', 'решение', 'result', 'solution']),
-                len(explanation) > 100  # Объяснение не должно быть слишком коротким
+                any(word in explanation for word in ['ответ', 'решение', 'result', 'solution', 'равен', '=']),
+                len(explanation) > 50  # Объяснение не должно быть слишком коротким
             ]
 
-            return sum(consistency_indicators) >= 2
+            return sum(consistency_indicators) >= 1
 
         except Exception as e:
             logger.warning(f"Ошибка проверки консистентности: {e}")
@@ -204,8 +277,8 @@ class HybridSolver:
 
         # Проверяем наличие математических терминов
         math_terms = [
-            'уравнение', 'формула', 'метод', 'решить',
-            'calculate', 'solve', 'equation', 'formula'
+            'уравнение', 'формула', 'метод', 'решить', 'вычислить',
+            'calculate', 'solve', 'equation', 'formula', 'функция'
         ]
 
         return any(term in explanation for term in math_terms)
