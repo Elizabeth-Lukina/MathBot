@@ -12,6 +12,7 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 
 # OpenAI API ключ
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+OPENAI_BASE_URL = "https://api.proxyapi.ru"
 
 # Переключается на True если Tesseract не работает
 USE_OPENAI_VISION = False

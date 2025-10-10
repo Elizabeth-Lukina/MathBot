@@ -41,6 +41,7 @@ class MathSolver:
                 result = equation_solver.solve(problem_text)
             elif problem_type == "derivative":
                 result = derivative_solver.solve(problem_text)
+                print(f"🔍 math_solver: результат от derivative_solver: {result}")  # ОТЛАДКА
             elif problem_type == "integral":
                 result = integral_solver.solve(problem_text)
             elif problem_type == "trigonometry":
@@ -54,7 +55,7 @@ class MathSolver:
             processing_time = time.time() - start_time
 
             if result and result.get('success'):
-                return {
+                final_result = {
                     'success': True,
                     'problem_type': problem_type,
                     'solution': result['solution'],
@@ -64,44 +65,56 @@ class MathSolver:
                     'processing_time': processing_time,
                     'explanation': result.get('explanation', '')
                 }
+                print(f"🔍 math_solver: финальный результат: {final_result}")  # ОТЛАДКА
+                return final_result
             else:
-                return {
+                error_result = {
                     'success': False,
                     'problem_type': problem_type,
                     'method': 'sympy',
                     'processing_time': processing_time,
-                    'error': result.get('explanation', 'Не удалось решить задачу') if result else 'Не удалось решить задачу'
+                    'error': result.get('explanation',
+                                        'Не удалось решить задачу') if result else 'Не удалось решить задачу'
                 }
+                print(f"🔍 math_solver: ошибка: {error_result}")  # ОТЛАДКА
+                return error_result
 
         except Exception as e:
             processing_time = time.time() - start_time
             logger.error(f"Ошибка решения задачи: {e}")
-            return {
+            error_result = {
                 'success': False,
                 'method': 'sympy',
                 'processing_time': processing_time,
                 'error': str(e)
             }
+            print(f"🔍 math_solver: исключение: {error_result}")  # ОТЛАДКА
+            return error_result
 
     def _detect_problem_type(self, text: str) -> str:
         """Определение типа математической задачи"""
         text_lower = text.lower()
 
-        if any(word in text_lower for word in ['производн', 'дифференц', 'f\'', 'd/dx', 'dy/dx']):
-            return 'derivative'
-
+        # 1. Сначала проверяем производные - ВЫСШИЙ ПРИОРИТЕТ
         if re.search(r'f\s*\(\s*x\s*\)\s*=', text, re.IGNORECASE):
             return 'derivative'
 
+        if any(word in text_lower for word in ['производн', 'дифференц', 'f\'', 'd/dx', 'dy/dx']):
+            return 'derivative'
+
+        # 2. Интегралы
         if any(word in text_lower for word in ['интеграл', '∫', 'проинтегрир']):
             return 'integral'
 
+        # 3. Уравнения
         if '=' in text:
             return 'equation'
 
+        # 4. Тригонометрия
         if any(word in text_lower for word in ['sin', 'cos', 'tan', 'tg', 'ctg', 'тригонометр']):
             return 'trigonometry'
 
+        # 5. Алгебра
         if any(word in text_lower for word in ['упростить', 'разложить', 'алгебр']):
             return 'algebra'
 

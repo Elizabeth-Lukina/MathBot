@@ -127,7 +127,7 @@ class MathBot:
     async def handle_solution_mode_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Показать выбор режима решения"""
         try:
-            keyboard = bot_keyboard.get_solution_mode_keyboard()
+            keyboard = bot_keyboard.get_solution_mode_keyboard()  # Правильное название метода
 
             await update.message.reply_text(
                 BOT_MESSAGES['mode_selection'],
@@ -176,53 +176,67 @@ class MathBot:
 
     async def handle_mode_selection(self, query, context: ContextTypes.DEFAULT_TYPE, callback_data: str) -> None:
         """Обработка выбора режима"""
-        mode = callback_data.replace('mode_', '')
-        context.user_data['selected_mode'] = mode
+        try:
+            mode = callback_data.replace('mode_', '')
+            context.user_data['selected_mode'] = mode
 
-        mode_info = SOLUTION_MODES.get(mode, {})
-        confirm_text = f"""
-{mode_info.get('emoji', '🎯')} *{mode_info.get('name', 'Режим')}*
+            mode_info = SOLUTION_MODES.get(mode, {})
+            confirm_text = f"""
+        {mode_info.get('emoji', '🎯')} *{mode_info.get('name', 'Режим')}*
 
-{mode_info.get('description', '')}
+        {mode_info.get('description', '')}
 
-✅ *Подтвердите выбор режима*
-        """
+        ✅ *Подтвердите выбор режима*
+                """
 
-        keyboard = bot_keyboard.get_confirm_mode_keyboard(mode)
-        await query.edit_message_text(
-            confirm_text,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=keyboard
-        )
+            keyboard = bot_keyboard.get_confirm_mode_keyboard(mode)  # Правильное название метода
+            if not keyboard:
+                raise ValueError("Клавиатура не создана")
+
+            await query.edit_message_text(
+                confirm_text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard
+            )
+        except Exception as e:
+            logger.error(f"Ошибка в handle_mode_selection: {e}")
+            await query.edit_message_text("❌ Ошибка выбора режима")
 
     async def handle_mode_confirmation(self, query, context: ContextTypes.DEFAULT_TYPE, callback_data: str) -> None:
         """Обработка подтверждения режима"""
-        mode = callback_data.replace('confirm_mode_', '')
-        context.user_data['solution_mode'] = mode
+        try:
+            mode = callback_data.replace('confirm_mode_', '')
+            context.user_data['solution_mode'] = mode
 
-        # Сообщения подтверждения
-        mode_messages = {
-            'quick': BOT_MESSAGES['quick_mode_selected'],
-            'exam': BOT_MESSAGES['exam_mode_selected'],
-            'tutor': BOT_MESSAGES['tutor_mode_selected']
-        }
+            # Сообщения подтверждения
+            mode_messages = {
+                'quick': BOT_MESSAGES['quick_mode_selected'],
+                'exam': BOT_MESSAGES['exam_mode_selected'],
+                'tutor': BOT_MESSAGES['tutor_mode_selected']
+            }
 
-        await query.edit_message_text(
-            mode_messages.get(mode, "✅ Режим выбран"),
-            parse_mode=ParseMode.MARKDOWN
-        )
+            await query.edit_message_text(
+                mode_messages.get(mode, "✅ Режим выбран"),
+                parse_mode=ParseMode.MARKDOWN
+            )
 
-        # Предлагаем ввести задачу
-        keyboard = bot_keyboard.get_input_type_keyboard()
-        await query.message.reply_text(
-            "📝 Выберите способ ввода задачи:",
-            reply_markup=keyboard
-        )
+            # Предлагаем ввести задачу
+            keyboard = bot_keyboard.get_input_type_keyboard()  # Правильное название метода
+            if not keyboard:
+                raise ValueError("Клавиатура ввода не создана")
+
+            await query.message.reply_text(
+                "📝 Выберите способ ввода задачи:",
+                reply_markup=keyboard
+            )
+        except Exception as e:
+            logger.error(f"Ошибка в handle_mode_confirmation: {e}")
+            await query.edit_message_text("❌ Ошибка подтверждения режима")
 
     async def handle_text_problem(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Обработка текстовой математической задачи"""
         try:
-            print(f"Получена задача: {update.message.text}")  # Отладочный вывод
+            print(f"Получена задача: {update.message.text}")
 
             user_data = user_data_extractor.extract_user_data(update)
             user_id = user_data['user_id']
@@ -263,13 +277,11 @@ class MathBot:
                 }
                 db.save_solution(solution_data)
 
-                # Форматируем ответ
-                solution_message = message_formatter.format_solution_message(solution_data)
-                keyboard = bot_keyboard.get_solution_result_keyboard()
+                # Получаем клавиатуру для результата
+                keyboard = bot_keyboard.get_solution_result_keyboard()  # Без параметра, так как solution_id не передается
 
                 await processing_message.edit_text(
-                    solution_message,
-                    parse_mode=ParseMode.MARKDOWN,
+                    solution_result['explanation'],
                     reply_markup=keyboard
                 )
             else:
@@ -410,20 +422,34 @@ class MathBot:
     # Callback методы
     async def handle_solution_mode_callback(self, query, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Показать выбор режима из callback"""
-        keyboard = bot_keyboard.get_solution_mode_keyboard()
-        await query.edit_message_text(
-            BOT_MESSAGES['mode_selection'],
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=keyboard
-        )
+        try:
+            keyboard = bot_keyboard.get_solution_mode_keyboard()  # Правильное название метода
+            if not keyboard:
+                raise ValueError("Клавиатура режимов не создана")
+
+            await query.edit_message_text(
+                BOT_MESSAGES['mode_selection'],
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard
+            )
+        except Exception as e:
+            logger.error(f"Ошибка в handle_solution_mode_callback: {e}")
+            await query.edit_message_text("❌ Ошибка выбора режима")
 
     async def show_main_menu_callback(self, query, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Показать главное меню из callback"""
-        await query.edit_message_text(
-            "🏠 *Главное меню* - выберите действие:",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=bot_keyboard.get_main_menu()
-        )
+        try:
+            # Отправляем новое сообщение с reply-клавиатурой вместо редактирования
+            await query.message.reply_text(
+                "🏠 *Главное меню* - выберите действие:",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=bot_keyboard.get_main_menu()
+            )
+            # Удаляем предыдущее сообщение с inline-клавиатурой
+            await query.delete_message()
+        except Exception as e:
+            logger.error(f"Ошибка в show_main_menu_callback: {e}")
+            await query.edit_message_text("❌ Ошибка отображения меню")
 
     async def show_balance_callback(self, query, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Показать баланс из callback"""

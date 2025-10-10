@@ -1,305 +1,430 @@
 """
-Гибридный решатель - объединяет точность SymPy и объяснения AI
-С проверкой корректности AI объяснений
+Гибридный решатель - объединяет точность SymPy и AI объяснения
 """
 
 import logging
 import time
-from typing import Dict, Any, List
-from math_solver import math_solver  # Добавляем импорт
-from explanation_generator import explanation_generator
-from config import SOLUTION_MODES
+import json
+import re
+import requests
+from typing import Dict, Any
+from math_solver import math_solver
+from config import SOLUTION_MODES, OPENAI_API_KEY
 
 logger = logging.getLogger(__name__)
 
 
 class HybridSolver:
-    """Гибридный решатель с проверкой AI объяснений"""
+    """Гибридный решатель с AI объяснениями"""
 
     def __init__(self):
         self.sympy_solver = math_solver
-        self.ai_explainer = explanation_generator
 
     def solve_with_mode(self, problem_text: str, mode: str = 'exam') -> Dict[str, Any]:
-        """Упрощенная версия - только SymPy, без OpenAI"""
-        start_time = time.time()
+        """Решает задачу с AI объяснениями"""
+        print(f"🔍 hybrid_solver: режим {mode}, задача: {problem_text}")  # ОТЛАДКА
 
-        try:
-            # 1. Решаем через SymPy
-            logger.info(f"Решаем задачу через SymPy в режиме {mode}")
-            sympy_result = self.sympy_solver.solve_problem(problem_text)
+        # 1. Решаем через SymPy
+        sympy_result = self.sympy_solver.solve_problem(problem_text)
 
-            if not sympy_result['success']:
-                return {
-                    'success': False,
-                    'error': 'Не удалось решить задачу с помощью SymPy',
-                    'mode': mode
-                }
+        if not sympy_result['success']:
+            return sympy_result
 
-            processing_time = time.time() - start_time
-
-            # 2. Формируем ответ без AI
-            result = {
+        # 2. Для быстрого режима - только ответ
+        if mode == 'quick':
+            print("🔍 hybrid_solver: быстрый режим - только ответ")  # ОТЛАДКА
+            return {
                 'success': True,
-                'mode': mode,
                 'solution': sympy_result['solution'],
+                'explanation': f"Ответ: {sympy_result['solution']}",
+                'problem_type': sympy_result['problem_type']
+            }
+
+        # 3. Для exam и tutor режимов - ГЕНЕРИРУЕМ AI ОБЪЯСНЕНИЕ
+        print(f"🔍 hybrid_solver: генерируем AI объяснение для режима {mode}")  # ОТЛАДКА
+
+        ai_explanation = self._generate_ai_explanation(
+            problem_text,
+            sympy_result,
+            mode
+        )
+
+        print(f"🔍 hybrid_solver: результат AI: {ai_explanation}")  # ОТЛАДКА
+
+        if ai_explanation['success']:
+            # Возвращаем AI объяснение
+            return {
+                'success': True,
+                'solution': sympy_result['solution'],
+                'explanation': ai_explanation['explanation'],
+                'problem_type': sympy_result['problem_type'],
+                'source': 'ai'
+            }
+        else:
+            # Fallback на SymPy объяснение
+            print(f"🔍 hybrid_solver: AI не сработал, используем fallback")  # ОТЛАДКА
+            return {
+                'success': True,
+                'solution': sympy_result['solution'],
+                'explanation': f"Задача: {problem_text}\n\nОтвет: {sympy_result['solution']}",
                 'problem_type': sympy_result['problem_type'],
                 'source': 'sympy',
-                'processing_time': processing_time,
-                'cost': 0.001
+                'ai_error': ai_explanation.get('error')
             }
 
-            # 3. Добавляем базовое объяснение в зависимости от режима
-            if mode == 'quick':
-                result['explanation'] = f'🚀 Ответ: {sympy_result["solution"]}'
+    def _generate_ai_explanation(self, problem_text: str, sympy_result: Dict, mode: str) -> Dict[str, Any]:
+        """Генерирует AI объяснение через proxyapi.ru"""
+        try:
+            # Подготавливаем промпт в зависимости от режима
+            prompt = self._create_prompt(problem_text, sympy_result, mode)
+
+            # Отправляем запрос к AI
+            response_text = self._call_proxyapi(prompt)
+
+            if not response_text:
+                return {'success': False, 'error': 'AI сервис недоступен'}
+
+            # Парсим и валидируем ответ AI
+            return self._parse_ai_response(response_text, sympy_result['solution'])
+
+        except Exception as e:
+            logger.error(f"Ошибка генерации AI объяснения: {e}")
+            return {'success': False, 'error': str(e)}
+
+    def _create_prompt(self, problem_text: str, sympy_result: Dict, mode: str) -> str:
+        """Создает универсальный промпт для AI для любых типов задач"""
+
+        # Базовые инструкции для всех режимов
+        base_instructions = """
+    Ты - универсальный математический эксперт. Реши задачу и предоставь ответ в формате JSON.
+
+    Задача: {problem_text}
+
+    Уже вычисленное решение: {solution}
+    Тип задачи: {problem_type}
+
+    ВАЖНО: Поле "solution" должно содержать точно: {solution}
+    """
+
+        # Формат для exam режима
+        if mode == 'exam':
+            format_instructions = """
+    Верни ответ в формате JSON:
+    {{
+    "solution": "{solution}",
+    "steps": ["четкий шаг 1", "четкий шаг 2", "четкий шаг 3"],
+    "explanation": "краткое и понятное объяснение решения"
+    }}
+
+    Требования для exam режима:
+    - Шаги должны быть четкими и последовательными
+    - Объяснение должно быть лаконичным
+    - Акцент на логике решения
+    """
+
+        else:  # tutor режим
+            format_instructions = """
+    Верни ответ в формате JSON:
+    {{
+    "solution": "{solution}",
+    "steps": ["подробный шаг 1 с пояснениями", "подробный шаг 2 с пояснениями", "подробный шаг 3 с пояснениями"],
+    "explanation": "развернутое объяснение метода решения",
+    "theory": "теоретическая база: какие правила, формулы и теоремы применяются",
+    "tips": ["практический совет 1", "практический совет 2"],
+    "common_mistakes": ["распространенная ошибка 1", "распространенная ошибка 2"]
+    }}
+
+    Требования для tutor режима:
+    - Будь максимально подробным в объяснениях
+    - Объясни КАК и ПОЧЕМУ работает каждый метод
+    - Дай практические советы для подобных задач
+    - Предупреди о типичных ошибках
+    - Объясни теоретическую основу
+    """
+
+        # Универсальные советы для всех типов задач
+        universal_advice = """
+    Универсальные рекомендации:
+    - Анализируй тип задачи и выбирай соответствующий метод
+    - Объясни почему выбран именно этот метод решения
+    - Покажи применение математических правил и формул
+    - Для производных: объясни правила дифференцирования
+    - Для интегралов: объясни методы интегрирования  
+    - Для уравнений: объясни методы решения
+    - Для пределов: объясни правила вычисления
+    - Убедись, что объяснение понятно студенту
+    """
+
+        prompt = base_instructions.format(
+            problem_text=problem_text,
+            solution=sympy_result['solution'],
+            problem_type=sympy_result.get('problem_type', 'unknown')
+        ) + format_instructions + universal_advice + """
+
+    КРИТИЧЕСКИ ВАЖНО:
+    1. Поле "solution" должно быть точно: {solution}
+    2. Не меняй математическое выражение в solution
+    3. Используй обычный текст (без Markdown: *, _, `)
+    4. JSON должен быть валидным (проверь запятые)
+    5. Для tutor режима заполни ВСЕ поля подробно
+    6. Адаптируй объяснение под тип задачи
+
+    Начни анализ с определения типа задачи и выбора метода решения.
+    """.format(solution=sympy_result['solution'])
+
+        return prompt
+
+    def _call_proxyapi(self, prompt: str) -> str:
+        """Вызывает proxyapi.ru с улучшенным системным промптом"""
+        try:
+            url = "https://api.proxyapi.ru/openai/v1/chat/completions"
+
+            headers = {
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Content-Type": "application/json"
+            }
+
+            data = {
+                "model": "gpt-3.5-turbo",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": """Ты универсальный математический эксперт. 
+    Твоя задача - решать ЛЮБЫЕ типы математических задач: производные, интегралы, уравнения, пределы, матрицы и т.д.
+    Всегда отвечай в формате JSON. Убедись, что JSON валидный.
+    Адаптируй объяснение под тип задачи.
+    Будь точным в математических выражениях."""
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                "temperature": 0.3,
+                "max_tokens": 2000
+            }
+
+            response = requests.post(
+                url,
+                headers=headers,
+                json=data,
+                timeout=30
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                return result['choices'][0]['message']['content']
             else:
-                steps_text = '\n'.join(
-                    [f"• {step}" for step in sympy_result.get('steps', ['Задача решена символьными вычислениями'])])
-                result['explanation'] = f'''
-    ✅ *Решение найдено:*
-    `{sympy_result["solution"]}`
-
-    📝 *Тип задачи:* {sympy_result["problem_type"]}
-    ⚙️ *Метод:* SymPy математический движок
-
-    💡 *Шаги решения:*
-    {steps_text}
-                '''
-
-            logger.info(f"Решение завершено за {processing_time:.2f}с")
-            return result
+                logger.error(f"Ошибка ProxyAPI: {response.status_code} - {response.text}")
+                return None
 
         except Exception as e:
-            logger.error(f"Ошибка гибридного решения: {e}")
-            return {
-                'success': False,
-                'error': f'Ошибка решения: {str(e)}',
-                'mode': mode
-            }
-    # def solve_with_mode(self, problem_text: str, mode: str = 'exam') -> Dict[str, Any]:
-    #     """
-    #     Решает задачу в выбранном режиме с гибридным подходом
-    #             """
-    #     start_time = time.time()
-    #
-    #     try:
-    #         mode_config = SOLUTION_MODES.get(mode, SOLUTION_MODES['exam'])
-    #
-    #         # 1. Всегда решаем через SymPy сначала (дешево и точно)
-    #         logger.info(f"Решаем задачу через SymPy в режиме {mode}")
-    #         sympy_result = self.sympy_solver.solve_problem(problem_text)
-    #
-    #         if not sympy_result['success']:
-    #             # Пробуем решить через AI если SymPy не смог
-    #             logger.info("SymPy не смог решить, пробуем AI...")
-    #             ai_solution = self.ai_explainer.solve_complex_problem(problem_text)
-    #
-    #             if ai_solution['success']:
-    #                 processing_time = time.time() - start_time
-    #                 return {
-    #                     'success': True,
-    #                     'mode': mode,
-    #                     'solution': ai_solution['solution'],
-    #                     'problem_type': ai_solution.get('problem_type', 'complex'),
-    #                     'source': 'openai',
-    #                     'processing_time': processing_time,
-    #                     'cost': ai_solution.get('estimated_cost', 0.1),
-    #                     'explanation': ai_solution.get('explanation', ''),
-    #                     'steps': ai_solution.get('steps', [])
-    #                 }
-    #             else:
-    #                 return {
-    #     #                 'success': False,
-    #     #                 'error': 'Не удалось решить задачу ни SymPy, ни AI',
-    #     #                 'mode': mode
-    #     #             }
-    #     #
-    #     #     # 2. Для быстрого режима - возвращаем только ответ
-    #     #     if mode == 'quick':
-    #     #         processing_time = time.time() - start_time
-    #     #         return {
-    #     #             'success': True,
-    #     #             'mode': 'quick',
-    #     #             'solution': sympy_result['solution'],
-    #     #             'problem_type': sympy_result['problem_type'],
-    #     #             'source': 'sympy',
-    #     #             'processing_time': processing_time,
-    #     #             'cost': 0.001,
-    #     #             'explanation': '🚀 Режим быстрого ответа - только решение'
-    #     #         }
-    #     #
-    #     #     # 3. Для режимов с объяснениями - генерируем через AI
-    #     #     logger.info(f"Генерируем AI объяснение для режима {mode}")
-    #     #
-    #     #     # Подготавливаем данные для AI
-    #     #     ai_input = {
-    #     #         'problem_text': problem_text,
-    #     #         'solution': sympy_result['solution'],
-    #     #         'problem_type': sympy_result['problem_type'],
-    #     #         'steps': sympy_result.get('steps', []),
-    #     #         'mode': mode
-    #     #     }
-    #     #
-    #     #     # Генерируем объяснение (синхронно)
-    #     #     ai_result = self.ai_explainer.generate_explanation(ai_input)
-    #     #
-    #     #     # 4. Проверяем корректность AI объяснения
-    #     #     validated_explanation = self._validate_ai_explanation(
-    #     #         ai_result,
-    #     #         sympy_result['solution'],
-    #     #         problem_text
-    #     #     )
-    #     #
-    #     #     processing_time = time.time() - start_time
-    #     #
-    #     #     # Формируем финальный результат
-    #     #     result = {
-    #     #         'success': True,
-    #     #         'mode': mode,
-    #     #         'solution': sympy_result['solution'],
-    #     #         'problem_type': sympy_result['problem_type'],
-    #     #         'source': 'hybrid',
-    #     #         'processing_time': processing_time,
-    #     #         'cost': ai_result.get('estimated_cost', 0.05),
-    #     #         'sympy_data': sympy_result,
-    #     #         'ai_validation': validated_explanation['validation_result']
-    #     #     }
-    #     #
-    #     #     # Добавляем объяснение в зависимости от режима
-    #     #     if mode == 'exam':
-    #     #         result.update({
-    #     #             'explanation': validated_explanation['safe_explanation'],
-    #     #             'steps': validated_explanation.get('steps', []),
-    #     #             'latex': sympy_result.get('latex', '')
-    #     #         })
-    #     #     elif mode == 'tutor':
-    #     #         result.update({
-    #     #             'explanation': validated_explanation['safe_explanation'],
-    #     #             'hints': validated_explanation.get('hints', []),
-    #     #             'common_mistakes': validated_explanation.get('common_mistakes', []),
-    #     #             'learning_tips': validated_explanation.get('learning_tips', [])
-    #     #         })
-    #     #
-    #     #     logger.info(f"Гибридное решение завершено за {processing_time:.2f}с")
-    #     #     return result
-    #     #
-    #     # except Exception as e:
-    #     #     logger.error(f"Ошибка гибридного решения: {e}")
-    #     #     return {
-    #     #         'success': False,
-    #     #         'error': f'Ошибка гибридного решения: {str(e)}',
-    #     #         'mode': mode
-    #     #     }
+            logger.error(f"Ошибка вызова ProxyAPI: {e}")
+            return None
 
-    def _validate_ai_explanation(self, ai_result: Dict, sympy_solution: str, original_problem: str) -> Dict[str, Any]:
-        """
-        Проверяет корректность AI объяснения и создает безопасную версию
-        """
+    def _parse_ai_response(self, response_text: str, expected_solution: str) -> Dict[str, Any]:
+        """Парсит и валидирует ответ AI"""
         try:
-            # Если AI не сработал, возвращаем базовое объяснение
-            if not ai_result.get('success', False):
-                return self._create_fallback_explanation(sympy_solution)
+            # Чистим ответ от возможных лишних символов
+            cleaned_response = self._clean_json_response(response_text)
 
-            validation_checks = {
-                'has_explanation': bool(ai_result.get('explanation')),
-                'explanation_length': len(ai_result.get('explanation', '')) > 50,
-                'matches_solution': self._check_solution_consistency(ai_result, sympy_solution),
-                'no_harmful_content': self._check_safe_content(ai_result),
-                'mathematical_correctness': self._check_mathematical_correctness(ai_result)
-            }
+            # Парсим JSON
+            ai_data = json.loads(cleaned_response)
 
-            # Подсчитываем score валидации
-            validation_score = sum(validation_checks.values())
-            is_valid = validation_score >= 3  # Минимум 3 из 5 проверок
+            print(f"🔍 ПАРСИНГ AI: полученные данные: {ai_data}")  # ОТЛАДКА
 
-            # Создаем безопасное объяснение
-            safe_explanation = self._create_safe_explanation(ai_result, sympy_solution, is_valid)
+            # Валидируем ответ
+            validation = self._validate_ai_solution(ai_data, expected_solution)
+
+            if not validation['is_valid']:
+                return {
+                    'success': False,
+                    'error': f"AI ответ не прошел валидацию: {validation['error']}"
+                }
+
+            # Форматируем финальное объяснение (полностью чистый текст)
+            explanation = self._format_clean_explanation(ai_data)
+
+            print(f"🔍 ФОРМАТИРОВАННОЕ ОБЪЯСНЕНИЕ: '{explanation}'")  # ОТЛАДКА
 
             return {
-                'validation_result': {
-                    'is_valid': is_valid,
-                    'score': validation_score,
-                    'checks': validation_checks
-                },
-                'safe_explanation': safe_explanation,
-                'steps': ai_result.get('step_by_step', []),
-                'hints': ai_result.get('tips', []),
-                'common_mistakes': ai_result.get('common_mistakes', []),
-                'learning_tips': ai_result.get('learning_tips', [])
+                'success': True,
+                'explanation': explanation
             }
 
+        except json.JSONDecodeError as e:
+            logger.error(f"Ошибка парсинга JSON от AI: {e}")
+            logger.error(f"Ответ AI: {response_text}")
+            return {'success': False, 'error': 'Неверный формат ответа AI'}
         except Exception as e:
-            logger.error(f"Ошибка валидации AI: {e}")
-            return self._create_fallback_explanation(sympy_solution)
+            logger.error(f"Ошибка обработки AI ответа: {e}")
+            return {'success': False, 'error': str(e)}
 
-    def _create_fallback_explanation(self, sympy_solution: str) -> Dict[str, Any]:
-        """Создает fallback объяснение если AI не сработал"""
-        return {
-            'validation_result': {'is_valid': False, 'score': 0, 'checks': {}},
-            'safe_explanation': f'✅ Решение: {sympy_solution}\n\n📝 Задача решена с помощью математического движка SymPy.',
-            'steps': ['Задача решена символьными вычислениями'],
-            'hints': ['Проверьте правильность условия задачи'],
-            'common_mistakes': [],
-            'learning_tips': ['Рекомендуется изучить соответствующую тему в учебнике']
-        }
+    def _clean_json_response(self, text: str) -> str:
+        """Чистит JSON ответ от лишних запятых и символов"""
+        # Убираем лишние запятые перед закрывающими скобками
+        text = re.sub(r',\s*}', '}', text)
+        text = re.sub(r',\s*]', ']', text)
 
-    def _check_solution_consistency(self, ai_result: Dict, sympy_solution: str) -> bool:
-        """Проверяет, что AI объяснение соответствует решению SymPy"""
+        # Убираем возможные markdown блоки
+        text = re.sub(r'```json\s*', '', text)
+        text = re.sub(r'\s*```', '', text)
+
+        # Убираем лишние пробелы
+        text = text.strip()
+
+        return text
+
+    def _validate_ai_solution(self, ai_data: Dict, expected_solution: str) -> Dict:
+        """Проверяет, что AI решение совпадает с SymPy"""
         try:
-            explanation = ai_result.get('explanation', '').lower()
-            sympy_sol_str = str(sympy_solution).lower()
+            ai_solution = str(ai_data.get('solution', '')).strip()
+            expected = str(expected_solution).strip()
 
-            # Проверяем, что в объяснении упоминается правильный ответ
-            consistency_indicators = [
-                any(word in explanation for word in ['ответ', 'решение', 'result', 'solution', 'равен', '=']),
-                len(explanation) > 50  # Объяснение не должно быть слишком коротким
-            ]
+            print(f"🔍 ВАЛИДАЦИЯ: AI сказал '{ai_solution}'")  # ОТЛАДКА
+            print(f"🔍 ВАЛИДАЦИЯ: Ожидали '{expected}'")  # ОТЛАДКА
 
-            return sum(consistency_indicators) >= 1
+            # Извлекаем только математическое выражение (игнорируем f'(x) = и т.д.)
+            def extract_math_expression(expr: str) -> str:
+                # Удаляем префиксы типа f'(x) =, производная =, и т.д.
+                expr = re.sub(r'^f\'?\(x\)\s*=\s*', '', expr, flags=re.IGNORECASE)
+                expr = re.sub(r'^производная\s*=\s*', '', expr, flags=re.IGNORECASE)
+                expr = re.sub(r'^ответ\s*:\s*', '', expr, flags=re.IGNORECASE)
+                expr = re.sub(r'^solution\s*:\s*', '', expr, flags=re.IGNORECASE)
+                return expr.strip()
+
+            ai_math = extract_math_expression(ai_solution)
+            expected_math = extract_math_expression(expected)
+
+            print(f"🔍 ВАЛИДАЦИЯ МАТЕМАТИКА: AI '{ai_math}'")  # ОТЛАДКА
+            print(f"🔍 ВАЛИДАЦИЯ МАТЕМАТИКА: Ожидали '{expected_math}'")  # ОТЛАДКА
+
+            # Нормализуем решения для сравнения
+            ai_normalized = re.sub(r'[\s*]', '', ai_math).lower()
+            expected_normalized = re.sub(r'[\s*]', '', expected_math).lower()
+
+            print(f"🔍 ВАЛИДАЦИЯ НОРМАЛИЗОВАНО: AI '{ai_normalized}'")  # ОТЛАДКА
+            print(f"🔍 ВАЛИДАЦИЯ НОРМАЛИЗОВАНО: Ожидали '{expected_normalized}'")  # ОТЛАДКА
+
+            if ai_normalized != expected_normalized:
+                return {
+                    'is_valid': False,
+                    'error': f"Решение AI '{ai_solution}' не совпадает с ожидаемым '{expected}'"
+                }
+
+            return {'is_valid': True}
 
         except Exception as e:
-            logger.warning(f"Ошибка проверки консистентности: {e}")
-            return False
+            return {'is_valid': False, 'error': f'Ошибка валидации: {e}'}
 
-    def _check_safe_content(self, ai_result: Dict) -> bool:
-        """Проверяет отсутствие вредоносного контента"""
-        unsafe_patterns = [
-            'как обмануть', 'списать', 'читер', 'обман',
-            'illegal', 'cheat', 'hack', 'exploit'
+    def _format_clean_explanation(self, ai_data: Dict) -> str:
+        """Универсальное форматирование AI объяснения для любых типов задач"""
+        lines = []
+
+        # Основное объяснение (обязательное поле)
+        explanation_text = ""
+        if ai_data.get('explanation'):
+            explanation_text = str(ai_data['explanation']).strip()
+
+        if explanation_text:
+            explanation_text = re.sub(r'[*_`]', '', explanation_text)
+            lines.append(explanation_text)
+            lines.append("")
+
+        # Шаги решения
+        if ai_data.get('steps') and isinstance(ai_data['steps'], list) and ai_data['steps']:
+            lines.append("📋 Шаги решения:")
+            for i, step in enumerate(ai_data['steps'], 1):
+                clean_step = re.sub(r'[*_`]', '', str(step))
+                lines.append(f"{i}. {clean_step}")
+            lines.append("")
+
+        # Теоретическая справка (для tutor)
+        if ai_data.get('theory') and str(ai_data['theory']).strip():
+            theory = re.sub(r'[*_`]', '', str(ai_data['theory']))
+            lines.append("📚 Теоретическая справка:")
+            lines.append(theory)
+            lines.append("")
+
+        # Полезные советы (для tutor)
+        if ai_data.get('tips') and isinstance(ai_data['tips'], list) and ai_data['tips']:
+            lines.append("💡 Полезные советы:")
+            for tip in ai_data['tips']:
+                clean_tip = re.sub(r'[*_`]', '', str(tip))
+                lines.append(f"• {clean_tip}")
+            lines.append("")
+
+        # Типичные ошибки (для tutor)
+        if ai_data.get('common_mistakes') and isinstance(ai_data['common_mistakes'], list) and ai_data[
+            'common_mistakes']:
+            lines.append("⚠️ Типичные ошибки:")
+            for mistake in ai_data['common_mistakes']:
+                clean_mistake = re.sub(r'[*_`]', '', str(mistake))
+                lines.append(f"• {clean_mistake}")
+
+        # Fallback: если AI вернул пустые поля, создаем универсальное объяснение
+        if not lines or (len(lines) == 1 and not explanation_text):
+            lines = self._create_universal_fallback(ai_data)
+
+        # Объединяем все строки
+        explanation = "\n".join(lines).strip()
+        explanation = re.sub(r'\n\s*\n', '\n\n', explanation)
+
+        return explanation
+
+    def _create_universal_fallback(self, ai_data: Dict) -> list:
+        """Создает универсальное fallback-объяснение для любых типов задач"""
+        solution = ai_data.get('solution', '')
+
+        lines = [
+            "🔍 Решение математической задачи:",
+            "",
+            f"Ответ: {solution}",
+            "",
+            "Общий подход к решению:",
+            "1. Проанализируйте тип задачи (производная, интеграл, уравнение и т.д.)",
+            "2. Определите подходящий метод решения",
+            "3. Примените соответствующие математические правила",
+            "4. Проведите вычисления последовательно",
+            "5. Проверьте результат",
+            "",
+            "💡 Советы:",
+            "• Внимательно читайте условие задачи",
+            "• Определите тип задачи перед началом решения",
+            "• Проверяйте каждое преобразование",
+            "• Упрощайте ответ если возможно",
+            "",
+            "⚠️ Частые ошибки:",
+            "• Неправильное определение типа задачи",
+            "• Ошибки в применении математических правил",
+            "• Арифметические ошибки в вычислениях",
+            "• Потеря констант в интегралах",
+            "• Неправильное применение формул"
         ]
 
-        explanation = ai_result.get('explanation', '').lower()
-        return not any(pattern in explanation for pattern in unsafe_patterns)
+        return lines
 
-    def _check_mathematical_correctness(self, ai_result: Dict) -> bool:
-        """Базовая проверка математической корректности"""
-        explanation = ai_result.get('explanation', '').lower()
+    def _format_quick_response(self, sympy_result: Dict, problem_text: str) -> str:
+        """Форматирование для быстрого режима"""
+        return f"Ответ: {sympy_result['solution']}"
 
-        # Проверяем наличие математических терминов
-        math_terms = [
-            'уравнение', 'формула', 'метод', 'решить', 'вычислить',
-            'calculate', 'solve', 'equation', 'formula', 'функция'
+    def _format_sympy_explanation(self, sympy_result: Dict, problem_text: str) -> str:
+        """Fallback объяснение через SymPy"""
+        lines = [
+            f"Задача: {problem_text}",
+            "",
+            f"Ответ: {sympy_result['solution']}"
         ]
 
-        return any(term in explanation for term in math_terms)
+        if sympy_result.get('steps'):
+            lines.append("")
+            lines.append("Шаги решения:")
+            for step in sympy_result['steps']:
+                # Убираем Markdown из шагов SymPy
+                clean_step = re.sub(r'[*_`]', '', step)
+                lines.append(f"- {clean_step}")
 
-    def _create_safe_explanation(self, ai_result: Dict, sympy_solution: str, is_valid: bool) -> str:
-        """Создает безопасное объяснение на основе валидации"""
-        if not is_valid or not ai_result.get('explanation'):
-            # Возвращаем шаблонное объяснение если AI не прошел валидацию
-            return f"""
-✅ *Решение найдено:*
-`{sympy_solution}`
-
-📝 *Метод решения:* 
-Задача решена с помощью математического движка SymPy, который гарантирует точность вычислений.
-
-💡 *Рекомендация:*
-Для лучшего понимания рекомендуется изучить соответствующую тему в учебнике.
-            """
-
-        # Возвращаем проверенное AI объяснение
-        return ai_result['explanation']
+        return "\n".join(lines)
 
 
 # Глобальный экземпляр гибридного решателя
