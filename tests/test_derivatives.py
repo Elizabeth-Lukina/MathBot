@@ -18,7 +18,7 @@ def test_derivatives():
 
     test_cases = [
         {"problem": "найти производную: x^2", "expected": "2*x", "desc": "Простая производная"},
-        {"problem": "производная от 3x^2 + 2x + 1", "expected": "6*x + 2", "desc": "Полином"},
+        {"problem": "производная от 3x^2 + 2x + 1", "expected": "6*x + 2", "desc": "Простая производная"},
         {"problem": "f(x) = x^3 - 2x", "expected": "3*x**2 - 2", "desc": "Функция f(x)"},
         {"problem": "дифференцировать sin(x)", "expected": "cos(x)", "desc": "Тригонометрическая функция"},
         {"problem": "производная e^x", "expected": "exp(x)", "desc": "Экспонента"},
