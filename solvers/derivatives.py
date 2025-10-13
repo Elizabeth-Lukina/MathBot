@@ -6,16 +6,24 @@ import sympy as sp
 import logging
 import re
 from typing import Dict, Any
-from sympy import symbols, diff, parse_expr
+from sympy import symbols, diff, parse_expr, simplify
 
 logger = logging.getLogger(__name__)
 
 
 class DerivativeSolver:
-    """Решатель производных"""
+    """Класс для вычисления производных математических выражений"""
 
     def solve(self, text: str) -> Dict[str, Any]:
-        """Решение производных"""
+        """
+        Основной метод для решения производных
+
+        Args:
+            text: Текст с математическим выражением для дифференцирования
+
+        Returns:
+            Словарь с результатом вычисления производной
+        """
         try:
             logger.info(f"Обрабатываем производную: {text}")
 
@@ -23,80 +31,52 @@ class DerivativeSolver:
             expression = self._extract_expression(text)
 
             if not expression:
-                return {
-                    'success': False,
-                    'solution': '',
-                    'steps': [],
-                    'latex': '',
-                    'explanation': 'Не найдено выражение для дифференцирования'
-                }
+                return self._create_error_response('Не найдено выражение для дифференцирования')
 
-            # Нормализуем выражение
+            # Нормализуем выражение для корректного парсинга
             normalized_expression = self._normalize_expression(expression)
             logger.info(f"Нормализованное выражение: {normalized_expression}")
 
-            # Парсим выражение
-            try:
-                expr = parse_expr(normalized_expression)
-            except Exception as e:
-                logger.error(f"Ошибка парсинга выражения '{normalized_expression}': {e}")
-                return {
-                    'success': False,
-                    'solution': '',
-                    'steps': [],
-                    'latex': '',
-                    'explanation': f'Ошибка парсинга выражения: {e}'
-                }
+            # Парсим выражение с помощью SymPy
+            expr = self._parse_expression(normalized_expression)
+            if not expr:
+                return self._create_error_response('Ошибка парсинга выражения')
 
+            # Проверяем наличие переменных для дифференцирования
             variables = expr.free_symbols
             if not variables:
-                return {
-                    'success': False,
-                    'solution': '',
-                    'steps': [],
-                    'latex': '',
-                    'explanation': 'Нет переменных для дифференцирования'
-                }
+                return self._create_error_response('Нет переменных для дифференцирования')
 
+            # Вычисляем производную
             var = list(variables)[0]
             derivative = diff(expr, var)
 
-            # Форматируем шаги для лучшего отображения
-            steps = [
-                f"Функция: f(x) = {sp.latex(expr)}",
-                f"Правило: (uv)' = u'v + uv'",
-                f"u = x^2, u' = 2x",
-                f"v = sin(x), v' = cos(x)",
-                f"Производная: f'(x) = {sp.latex(derivative)}"
-            ]
+            # Формируем шаги решения для пользователя
+            steps = self._generate_solution_steps(expr, derivative, var)
 
             return {
                 'success': True,
                 'solution': f"f'({var}) = {derivative}",
                 'steps': steps,
                 'latex': f"{sp.latex(derivative)}",
-                'explanation': f"Производная функции найдена успешно"
+                'explanation': "Производная функции найдена успешно"
             }
 
         except Exception as e:
             logger.error(f"Ошибка вычисления производной: {e}")
-            return {
-                'success': False,
-                'solution': '',
-                'steps': [],
-                'latex': '',
-                'explanation': f'Ошибка вычисления: {e}'
-            }
+            return self._create_error_response(f'Ошибка вычисления: {e}')
 
     def _extract_expression(self, text: str) -> str:
-        """Извлекает математическое выражение из текста"""
-        print(f"🔍 Анализируем текст: '{text}'")  # ОТЛАДКА
+        """
+        Извлекает математическое выражение из текста пользователя
+        """
+        logger.debug(f"Извлекаем выражение из текста: '{text}'")
 
-        # 1. Ищем f(x) = выражение (ВЫСШИЙ ПРИОРИТЕТ)
+        # 1. Ищем f(x) = выражение (высший приоритет)
         match_fx = re.search(r'f\s*\(\s*x\s*\)\s*=\s*(.+)', text, re.IGNORECASE)
         if match_fx:
             expression = match_fx.group(1).strip()
-            print(f"🔍 Извлекли из f(x): '{expression}'")  # ОТЛАДКА
+            logger.debug(f"Извлекли из f(x): '{expression}'")
             return expression
 
         # 2. Ищем производную от выражения
@@ -105,75 +85,122 @@ class DerivativeSolver:
             expression = match_deriv.group(1).strip()
             # Убираем "по x" если есть
             expression = re.sub(r'\s*по\s*x\s*$', '', expression)
-            print(f"🔍 Извлекли из 'производная от': '{expression}'")  # ОТЛАДКА
+            logger.debug(f"Извлекли из 'производная от': '{expression}'")
             return expression
 
         # 3. Ищем "найти производную"
         match_find = re.search(r'найти\s+производную\s+(.+)', text.lower())
         if match_find:
             expression = match_find.group(1).strip()
-            print(f"🔍 Извлекли из 'найти производную': '{expression}'")  # ОТЛАДКА
+            logger.debug(f"Извлекли из 'найти производную': '{expression}'")
             return expression
 
         # 4. Удаляем русские команды и оставляем только математику
-        clean_text = re.sub(
-            r'(производная|производную|найти|функции|функция|от|дифференцировать|дифференциал|f\'\s*\(\s*x\s*\))',
-            '', text, flags=re.IGNORECASE
-        )
-        clean_text = clean_text.strip()
-        print(f"🔍 Очищенный текст: '{clean_text}'")  # ОТЛАДКА
+        clean_text = self._remove_derivative_commands(text)
+        logger.debug(f"Очищенный текст: '{clean_text}'")
 
         # 5. Ищем математическое выражение
+        math_expression = self._find_math_expression(clean_text)
+        if math_expression:
+            logger.debug(f"Извлекли математическое выражение: '{math_expression}'")
+            return math_expression
+
+        logger.debug("Не удалось извлечь выражение")
+        return None
+
+    def _remove_derivative_commands(self, text: str) -> str:
+        """Удаляет команды связанные с производными из текста"""
+        derivative_commands = [
+            'производная', 'производную', 'найти', 'функции', 'функция',
+            'от', 'дифференцировать', 'дифференциал', r'f\'\s*\(\s*x\s*\)'
+        ]
+
+        clean_text = text
+        for command in derivative_commands:
+            clean_text = re.sub(command, '', clean_text, flags=re.IGNORECASE)
+
+        return clean_text.strip()
+
+    def _find_math_expression(self, text: str) -> str:
+        """Находит математическое выражение в тексте"""
+        # Паттерн для математических выражений
         math_pattern = r'([a-zA-Z\d+\-*/\^\.\s\(\)e]+)'
-        matches = re.findall(math_pattern, clean_text)
+        matches = re.findall(math_pattern, text)
+
         if matches:
             # Берем самое длинное математическое выражение
             expression = max(matches, key=len).strip()
             expression = re.sub(r'\s+', ' ', expression)
-            print(f"🔍 Извлекли математическое выражение: '{expression}'")  # ОТЛАДКА
             return expression
 
-        print(f"🔍 Не удалось извлечь выражение")  # ОТЛАДКА
         return None
 
     def _normalize_expression(self, expression: str) -> str:
-        """Нормализует математическое выражение для SymPy - добавляет * где нужно"""
+        """
+        Нормализует математическое выражение для SymPy
+        """
         if not expression:
             return expression
 
-        normalized = expression
+        # Импортируем общий нормализатор
+        from .expression_normalizer import expression_normalizer
 
-        # Заменяем специальные символы Unicode
-        normalized = normalized.replace('²', '**2')
-        normalized = normalized.replace('³', '**3')
+        # Используем общую нормализацию
+        normalized = expression_normalizer.normalize_expression(expression)
 
-        # Заменяем ^ на **
-        normalized = normalized.replace('^', '**')
+        return normalized
 
-        # Добавляем * между цифрой и буквой: 3x -> 3*x, 2sin(x) -> 2*sin(x)
-        normalized = re.sub(r'(\d)([a-zA-Z\(])', r'\1*\2', normalized)
+    def _parse_expression(self, expression: str):
+        """Парсит математическое выражение с обработкой ошибок"""
+        try:
+            return parse_expr(expression)
+        except Exception as e:
+            logger.error(f"Ошибка парсинга выражения '{expression}': {e}")
+            return None
 
-        # Добавляем * между буквой и цифрой: x2 -> x*2
-        normalized = re.sub(r'([a-zA-Z\)])(\d)', r'\1*\2', normalized)
+    def _generate_solution_steps(self, expr, derivative, var) -> list:
+        """
+        Генерирует шаги решения для отображения пользователю
+        """
+        steps = [
+            f"Функция: f({var}) = {sp.latex(expr)}",
+            f"Производная: f'({var}) = {sp.latex(derivative)}"
+        ]
 
-        # Добавляем * между ) и ( или буквой: )( -> )*(, )x -> )*x
-        normalized = re.sub(r'(\))(\()', r'\1*\2', normalized)
-        normalized = re.sub(r'(\))([a-zA-Z])', r'\1*\2', normalized)
+        # Добавляем правило дифференцирования для сложных выражений
+        rule = self._identify_differentiation_rule(expr)
+        if rule:
+            steps.insert(1, f"Применено правило: {rule}")
 
-        # Обрабатываем e^x -> exp(x)
-        normalized = re.sub(r'e\^\(([^\)]+)\)', r'exp(\1)', normalized)
-        normalized = re.sub(r'e\^([^\(\)\s]+)', r'exp(\1)', normalized)
-        normalized = re.sub(r'e\*\*\(([^\)]+)\)', r'exp(\1)', normalized)
-        normalized = re.sub(r'e\*\*([^\(\)\s]+)', r'exp(\1)', normalized)
+        return steps
 
-        # Заменяем ln на log
-        normalized = re.sub(r'\bln\b', 'log', normalized)
+    def _identify_differentiation_rule(self, expr) -> str:
+        """Определяет какое правило дифференцирования было применено"""
+        expr_str = str(expr)
 
-        # Заменяем арктангенс
-        normalized = re.sub(r'\barctan\b', 'atan', normalized)
+        if '*' in expr_str and '(' in expr_str:
+            return "произведения (uv)' = u'v + uv'"
+        elif '/' in expr_str:
+            return "частного (u/v)' = (u'v - uv')/v²"
+        elif '**' in expr_str or '^' in expr_str:
+            return "степенной функции"
+        elif any(func in expr_str for func in ['sin', 'cos', 'tan']):
+            return "тригонометрических функций"
+        elif 'exp' in expr_str or 'log' in expr_str:
+            return "экспоненциальных или логарифмических функций"
+        else:
+            return None
 
-        return normalized.strip()
+    def _create_error_response(self, message: str) -> Dict[str, Any]:
+        """Создает стандартизированный ответ с ошибкой"""
+        return {
+            'success': False,
+            'solution': '',
+            'steps': [],
+            'latex': '',
+            'explanation': message
+        }
 
 
-# Глобальный экземпляр
+# Глобальный экземпляр решателя
 derivative_solver = DerivativeSolver()

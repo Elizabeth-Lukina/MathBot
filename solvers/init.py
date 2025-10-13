@@ -8,6 +8,7 @@ from .derivatives import derivative_solver
 from .integrals import integral_solver
 from .trigonometry import trigonometry_solver
 from .algebra import algebra_solver
+from .expression_normalizer import expression_normalizer
 
 __all__ = [
     'arithmetic_solver',
@@ -15,5 +16,6 @@ __all__ = [
     'derivative_solver',
     'integral_solver',
     'trigonometry_solver',
-    'algebra_solver'
+    'algebra_solver',
+    'expression_normalizer'
 ]
