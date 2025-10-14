@@ -92,49 +92,46 @@ class HybridSolver:
             return {'success': False, 'error': str(e)}
 
     def _create_prompt(self, problem_text: str, sympy_result: Dict, mode: str) -> str:
-        """Создает универсальный промпт для AI для любых типов задач"""
+        """Создает промпт для AI"""
 
-        # Базовые инструкции для всех режимов
-        base_instructions = """
+        if mode == 'quick':
+            return ""
+
+        base_instructions = f"""
     Ты - универсальный математический эксперт. Реши задачу и предоставь ответ в формате JSON.
-
     Задача: {problem_text}
-
-    Уже вычисленное решение: {solution}
-    Тип задачи: {problem_type}
-
-    ВАЖНО: Поле "solution" должно содержать точно: {solution}
+    Уже вычисленное решение SymPy: {sympy_result['solution']}
+    Тип задачи: {sympy_result.get('problem_type', 'unknown')}
     """
 
-        # Формат для exam режима
         if mode == 'exam':
             format_instructions = """
     Верни ответ в формате JSON:
-    {{
+    {
     "solution": "{solution}",
     "steps": ["четкий шаг 1", "четкий шаг 2", "четкий шаг 3"],
     "explanation": "краткое и понятное объяснение решения"
-    }}
+    }
 
-    Требования для exam режима:
+    Требования для exam режима: СУХО
     - Шаги должны быть четкими и последовательными
-    - Объяснение должно быть лаконичным
+    - Объяснение должно быть лаконичным(без лишней теории)
     - Акцент на логике решения
     """
-
         else:  # tutor режим
             format_instructions = """
     Верни ответ в формате JSON:
-    {{
+    { 
     "solution": "{solution}",
     "steps": ["подробный шаг 1 с пояснениями", "подробный шаг 2 с пояснениями", "подробный шаг 3 с пояснениями"],
     "explanation": "развернутое объяснение метода решения",
     "theory": "теоретическая база: какие правила, формулы и теоремы применяются",
     "tips": ["практический совет 1", "практический совет 2"],
     "common_mistakes": ["распространенная ошибка 1", "распространенная ошибка 2"]
-    }}
+    }
 
     Требования для tutor режима:
+    - Если пример достаточно простой, то лишнего не пиши, исходя из сложности задания
     - Будь максимально подробным в объяснениях
     - Объясни КАК и ПОЧЕМУ работает каждый метод
     - Дай практические советы для подобных задач
@@ -155,22 +152,19 @@ class HybridSolver:
     - Убедись, что объяснение понятно студенту
     """
 
-        prompt = base_instructions.format(
-            problem_text=problem_text,
-            solution=sympy_result['solution'],
-            problem_type=sympy_result.get('problem_type', 'unknown')
-        ) + format_instructions + universal_advice + """
-
+        critical_instructions = f"""
     КРИТИЧЕСКИ ВАЖНО:
-    1. Поле "solution" должно быть точно: {solution}
+    1. Поле "solution" должно быть точно: {sympy_result['solution']}
     2. Не меняй математическое выражение в solution
     3. Используй обычный текст (без Markdown: *, _, `)
     4. JSON должен быть валидным (проверь запятые)
     5. Для tutor режима заполни ВСЕ поля подробно
     6. Адаптируй объяснение под тип задачи
-
     Начни анализ с определения типа задачи и выбора метода решения.
-    """.format(solution=sympy_result['solution'])
+    """
+
+        prompt = base_instructions + format_instructions.format(
+            solution=sympy_result['solution']) + universal_advice + critical_instructions
 
         return prompt
 
@@ -225,8 +219,12 @@ class HybridSolver:
     def _parse_ai_response(self, response_text: str, expected_solution: str) -> Dict[str, Any]:
         """Парсит и валидирует ответ AI"""
         try:
+            print(f"🔍 RAW AI RESPONSE: {response_text}")  # ДЛЯ ОТЛАДКИ
+
             # Чистим ответ от возможных лишних символов
             cleaned_response = self._clean_json_response(response_text)
+
+            print(f"🔍 CLEANED AI RESPONSE: {cleaned_response}")  # ДЛЯ ОТЛАДКИ
 
             # Парсим JSON
             ai_data = json.loads(cleaned_response)
@@ -242,7 +240,7 @@ class HybridSolver:
                     'error': f"AI ответ не прошел валидацию: {validation['error']}"
                 }
 
-            # Форматируем финальное объяснение (полностью чистый текст)
+            # Форматируем финальное объяснение
             explanation = self._format_clean_explanation(ai_data)
 
             print(f"🔍 ФОРМАТИРОВАННОЕ ОБЪЯСНЕНИЕ: '{explanation}'")  # ОТЛАДКА
@@ -255,13 +253,30 @@ class HybridSolver:
         except json.JSONDecodeError as e:
             logger.error(f"Ошибка парсинга JSON от AI: {e}")
             logger.error(f"Ответ AI: {response_text}")
+
+            # Fallback: пытаемся извлечь объяснение даже из невалидного JSON
+            try:
+                # Ищем explanation в тексте
+                explanation_match = re.search(r'"explanation"\s*:\s*"([^"]*)"', response_text)
+                if explanation_match:
+                    explanation = explanation_match.group(1)
+                    return {
+                        'success': True,
+                        'explanation': f"🎯 ОТВЕТ: {expected_solution}\n\n{explanation}"
+                    }
+            except:
+                pass
+
             return {'success': False, 'error': 'Неверный формат ответа AI'}
         except Exception as e:
             logger.error(f"Ошибка обработки AI ответа: {e}")
             return {'success': False, 'error': str(e)}
 
     def _clean_json_response(self, text: str) -> str:
-        """Чистит JSON ответ от лишних запятых и символов"""
+        """Чистит JSON ответ от лишних символов"""
+        if not text:
+            return "{}"
+
         # Убираем лишние запятые перед закрывающими скобками
         text = re.sub(r',\s*}', '}', text)
         text = re.sub(r',\s*]', ']', text)
@@ -270,8 +285,18 @@ class HybridSolver:
         text = re.sub(r'```json\s*', '', text)
         text = re.sub(r'\s*```', '', text)
 
-        # Убираем лишние пробелы
+        # Убираем лишние пробелы и переносы в начале/конце
         text = text.strip()
+
+        # Если ответ начинается с переноса строки, убираем его
+        text = re.sub(r'^\s*\n', '', text)
+
+        # Проверяем, что это валидный JSON
+        if not text.startswith('{'):
+            # Пытаемся найти начало JSON
+            match = re.search(r'\{.*\}', text, re.DOTALL)
+            if match:
+                text = match.group(0)
 
         return text
 
@@ -318,53 +343,52 @@ class HybridSolver:
             return {'is_valid': False, 'error': f'Ошибка валидации: {e}'}
 
     def _format_clean_explanation(self, ai_data: Dict) -> str:
-        """Универсальное форматирование AI объяснения для любых типов задач"""
+        """Универсальное форматирование AI объяснения"""
         lines = []
 
-        # Основное объяснение (обязательное поле)
-        explanation_text = ""
-        if ai_data.get('explanation'):
-            explanation_text = str(ai_data['explanation']).strip()
+        solution = ai_data.get('solution', '')
 
+        # Всегда показываем ответ четко в начале
+        lines.append(f"🎯 **ОТВЕТ:** {solution}")
+        lines.append("")
+
+        # Основное объяснение
+        explanation_text = ai_data.get('explanation', '')
         if explanation_text:
-            explanation_text = re.sub(r'[*_`]', '', explanation_text)
-            lines.append(explanation_text)
+            clean_explanation = re.sub(r'[*_`]', '', str(explanation_text))
+            lines.append(clean_explanation)
             lines.append("")
 
         # Шаги решения
         if ai_data.get('steps') and isinstance(ai_data['steps'], list) and ai_data['steps']:
-            lines.append("📋 Шаги решения:")
+            lines.append("📋 **Шаги решения:**")
             for i, step in enumerate(ai_data['steps'], 1):
                 clean_step = re.sub(r'[*_`]', '', str(step))
                 lines.append(f"{i}. {clean_step}")
             lines.append("")
 
-        # Теоретическая справка (для tutor)
+        # Теоретическая справка (только для tutor)
         if ai_data.get('theory') and str(ai_data['theory']).strip():
             theory = re.sub(r'[*_`]', '', str(ai_data['theory']))
-            lines.append("📚 Теоретическая справка:")
+            lines.append("📚 **Теоретическая справка:**")
             lines.append(theory)
             lines.append("")
 
-        # Полезные советы (для tutor)
+        # Полезные советы (только для tutor)
         if ai_data.get('tips') and isinstance(ai_data['tips'], list) and ai_data['tips']:
-            lines.append("💡 Полезные советы:")
+            lines.append("💡 **Полезные советы:**")
             for tip in ai_data['tips']:
                 clean_tip = re.sub(r'[*_`]', '', str(tip))
                 lines.append(f"• {clean_tip}")
             lines.append("")
 
-        # Типичные ошибки (для tutor)
+        # Типичные ошибки (только для tutor)
         if ai_data.get('common_mistakes') and isinstance(ai_data['common_mistakes'], list) and ai_data[
             'common_mistakes']:
-            lines.append("⚠️ Типичные ошибки:")
+            lines.append("⚠️ **Типичные ошибки:**")
             for mistake in ai_data['common_mistakes']:
                 clean_mistake = re.sub(r'[*_`]', '', str(mistake))
                 lines.append(f"• {clean_mistake}")
-
-        # Fallback: если AI вернул пустые поля, создаем универсальное объяснение
-        if not lines or (len(lines) == 1 and not explanation_text):
-            lines = self._create_universal_fallback(ai_data)
 
         # Объединяем все строки
         explanation = "\n".join(lines).strip()

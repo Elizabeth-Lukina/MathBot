@@ -95,10 +95,11 @@ class MathBot:
             )
 
     async def handle_main_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Обработчик кнопок главного меню"""
+        """Обработчик главного меню и математических задач"""
         try:
             message_text = update.message.text
 
+            # Сначала проверяем кнопки меню
             if message_text == "🎯 Решить задачу":
                 await self.handle_solution_mode_selection(update, context)
             elif message_text == "💰 Баланс":
@@ -112,10 +113,8 @@ class MathBot:
             elif message_text == "🆘 Помощь":
                 await self.help_command(update, context)
             else:
-                await update.message.reply_text(
-                    "🤔 Не понимаю команду. Используйте кнопки меню или /help",
-                    reply_markup=bot_keyboard.get_main_menu()
-                )
+                # Если это не кнопка меню, пробуем решить как математическую задачу
+                await self.handle_text_problem(update, context)
 
         except Exception as e:
             logger.error(f"Ошибка обработки меню: {e}")
@@ -146,19 +145,12 @@ class MathBot:
 
             data = query.data
 
-            # Обработка выбора режима
+            # Обработка выбора режима - сразу применяем
             if data.startswith('mode_'):
                 await self.handle_mode_selection(query, context, data)
-            elif data.startswith('confirm_mode_'):
-                await self.handle_mode_confirmation(query, context, data)
+
             elif data == "change_mode":
                 await self.handle_solution_mode_callback(query, context)
-
-            # Обработка ввода задачи
-            elif data == "input_photo":
-                await query.edit_message_text("📸 Отправьте фото задачи...")
-            elif data == "input_text":
-                await query.edit_message_text("📝 Введите текст задачи...")
 
             # Навигация
             elif data == "back_main":
@@ -175,63 +167,30 @@ class MathBot:
             await query.edit_message_text("❌ Ошибка обработки запроса")
 
     async def handle_mode_selection(self, query, context: ContextTypes.DEFAULT_TYPE, callback_data: str) -> None:
-        """Обработка выбора режима"""
+        """Обработка выбора режима - сразу применяем без подтверждения"""
         try:
             mode = callback_data.replace('mode_', '')
-            context.user_data['selected_mode'] = mode
+            context.user_data['solution_mode'] = mode
 
             mode_info = SOLUTION_MODES.get(mode, {})
             confirm_text = f"""
-        {mode_info.get('emoji', '🎯')} *{mode_info.get('name', 'Режим')}*
+    {mode_info.get('emoji', '🎯')} *{mode_info.get('name', 'Режим')}*
 
-        {mode_info.get('description', '')}
+    {mode_info.get('description', '')}
 
-        ✅ *Подтвердите выбор режима*
-                """
-
-            keyboard = bot_keyboard.get_confirm_mode_keyboard(mode)  # Правильное название метода
-            if not keyboard:
-                raise ValueError("Клавиатура не создана")
+    ✅ *Режим выбран! Теперь отправьте задачу текстом или фото.*
+            """
 
             await query.edit_message_text(
                 confirm_text,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=keyboard
+                parse_mode=ParseMode.MARKDOWN
             )
+
         except Exception as e:
             logger.error(f"Ошибка в handle_mode_selection: {e}")
             await query.edit_message_text("❌ Ошибка выбора режима")
 
-    async def handle_mode_confirmation(self, query, context: ContextTypes.DEFAULT_TYPE, callback_data: str) -> None:
-        """Обработка подтверждения режима"""
-        try:
-            mode = callback_data.replace('confirm_mode_', '')
-            context.user_data['solution_mode'] = mode
-
-            # Сообщения подтверждения
-            mode_messages = {
-                'quick': BOT_MESSAGES['quick_mode_selected'],
-                'exam': BOT_MESSAGES['exam_mode_selected'],
-                'tutor': BOT_MESSAGES['tutor_mode_selected']
-            }
-
-            await query.edit_message_text(
-                mode_messages.get(mode, "✅ Режим выбран"),
-                parse_mode=ParseMode.MARKDOWN
-            )
-
-            # Предлагаем ввести задачу
-            keyboard = bot_keyboard.get_input_type_keyboard()  # Правильное название метода
-            if not keyboard:
-                raise ValueError("Клавиатура ввода не создана")
-
-            await query.message.reply_text(
-                "📝 Выберите способ ввода задачи:",
-                reply_markup=keyboard
-            )
-        except Exception as e:
-            logger.error(f"Ошибка в handle_mode_confirmation: {e}")
-            await query.edit_message_text("❌ Ошибка подтверждения режима")
+    # УДАЛЯЕМ handle_mode_confirmation - больше не нужно
 
     async def handle_text_problem(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Обработка текстовой математической задачи"""
@@ -508,7 +467,7 @@ class MathBot:
         await self.show_history(update, context)
 
     def setup_handlers(self) -> None:
-        """Настройка обработчиков"""
+        """Настройка обработчиков с правильным порядком"""
         if not self.application:
             return
 
@@ -518,13 +477,7 @@ class MathBot:
         self.application.add_handler(CommandHandler("balance", self.handle_balance_command))
         self.application.add_handler(CommandHandler("history", self.handle_history_command))
 
-        # Обработчик для математических задач ДО главного меню
-        self.application.add_handler(MessageHandler(
-            filters.TEXT & filters.Regex(r'[0-9+\-*/=xXyYzZ]'),  # Сначала ловим математику
-            self.handle_text_problem
-        ))
-
-        # Главное меню - после математики
+        # Главное меню - ПЕРВЫМ обработчиком
         self.application.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND,
             self.handle_main_menu

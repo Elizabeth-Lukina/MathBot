@@ -14,6 +14,46 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 OPENAI_BASE_URL = "https://api.proxyapi.ru"
 
+# DeepSeek API ключ
+DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY')
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+DEEPSEEK_MODEL = "deepseek-chat"
+
+# Настройки моделей AI
+AI_MODELS = {
+    'simple': {
+        'name': 'GPT-3.5 Turbo',
+        'model': 'gpt-3.5-turbo',
+        'base_url': OPENAI_BASE_URL,
+        'api_key': OPENAI_API_KEY,
+        'max_tokens': 2000,
+        'temperature': 0.3,
+        'cost_per_1k': 0.0015
+    },
+    'complex': {
+        'name': 'DeepSeek-Math',
+        'model': DEEPSEEK_MODEL,
+        'base_url': DEEPSEEK_BASE_URL,
+        'api_key': DEEPSEEK_API_KEY,
+        'max_tokens': 4000,
+        'temperature': 0.1,
+        'cost_per_1k': 0.0  # Бесплатно в рамках лимитов
+    },
+    'advanced': {
+        'name': 'GPT-4',
+        'model': 'gpt-4',
+        'base_url': OPENAI_BASE_URL,
+        'api_key': OPENAI_API_KEY,
+        'max_tokens': 4000,
+        'temperature': 0.2,
+        'cost_per_1k': 0.03
+    }
+}
+
+# Автоматический выбор модели в зависимости от сложности задачи
+AUTO_MODEL_SELECTION = True
+COMPLEXITY_THRESHOLD = 0.7  # Порог для переключения на сложную модель
+
 # Переключается на True если Tesseract не работает
 USE_OPENAI_VISION = False
 USE_OPENAI_VISION_FALLBACK = True  # Разрешить fallback на OpenAI Vision
@@ -34,7 +74,8 @@ SOLUTION_MODES = {
         'use_sympy': True,
         'use_ai_explanation': False,
         'cost_multiplier': 1.0,
-        'emoji': '🚀'
+        'emoji': '🚀',
+        'preferred_model': 'simple'
     },
     'exam': {
         'name': '📚 Экзамен',
@@ -42,7 +83,8 @@ SOLUTION_MODES = {
         'use_sympy': True,
         'use_ai_explanation': True,
         'cost_multiplier': 1.5,
-        'emoji': '📚'
+        'emoji': '📚',
+        'preferred_model': 'complex'
     },
     'tutor': {
         'name': '👨‍🏫 Репетитор',
@@ -50,7 +92,8 @@ SOLUTION_MODES = {
         'use_sympy': True,
         'use_ai_explanation': True,
         'cost_multiplier': 2.0,
-        'emoji': '👨‍🏫'
+        'emoji': '👨‍🏫',
+        'preferred_model': 'complex'
     }
 }
 
@@ -90,7 +133,7 @@ BOT_MESSAGES = {
 • Экзамен - подробное решение с объяснениями  
 • Репетитор - обучение с подсказками
 
-💰 *Система оплаты:*
+💰 *Система оплата:*
 • 3 бесплатных решения для новых пользователей
 • Подписки и пакеты решений
 
@@ -160,9 +203,17 @@ OPENAI_MODEL = "gpt-4o"
 OPENAI_MAX_TOKENS = 2000
 OPENAI_TEMPERATURE = 0.3
 
+# Признаки сложных математических задач для автоматического выбора модели
+COMPLEX_MATH_INDICATORS = [
+    '∫', 'd/dx', 'lim', '∑', '∏', '∂', '∇', 'matrix', 'vector', 'tensor',
+    'производная', 'интеграл', 'предел', 'дифференциал', 'уравнение в частных производных',
+    'ряд', 'функция', 'комплексн', 'матрица', 'определитель', 'собственные значения',
+    'преобразование', 'лаплас', 'фурье', 'теория вероятност', 'статистик'
+]
+
 SUPPORTED_MATH_TYPES = [
     'equations', 'integrals', 'derivatives', 'arithmetic',
-    'trigonometry', 'algebra'
+    'trigonometry', 'algebra', 'calculus', 'linear_algebra'
 ]
 
 EXAMPLE_PROBLEMS = [
@@ -172,7 +223,6 @@ EXAMPLE_PROBLEMS = [
     "Найти cos(π/4)",
     "Решить систему: x + y = 5, 2x - y = 1"
 ]
-
 
 MAX_IMAGE_SIZE = 10 * 1024 * 1024
 MAX_TEXT_LENGTH = 2000

@@ -23,7 +23,7 @@ class ExplanationGenerator:
             logger.warning("OPENAI_API_KEY не установлен")
             self.client = None
         else:
-            # Используем proxyapi.ru вместо прямого OpenAI
+            # Используем proxyapi.ru
             self.client = OpenAI(
                 api_key=self.api_key,
                 base_url="https://api.proxyapi.ru"
