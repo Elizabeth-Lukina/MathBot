@@ -202,5 +202,5 @@ class DerivativeSolver:
         }
 
 
-# Глобальный экземпляр решателя
+
 derivative_solver = DerivativeSolver()

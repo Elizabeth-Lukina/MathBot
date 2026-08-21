@@ -120,5 +120,5 @@ class MathSolver:
 
         return 'arithmetic'
 
-# Глобальный экземпляр решателя
+
 math_solver = MathSolver()
