@@ -49,10 +49,10 @@ class MathBot:
             user_id = user_data['user_id']
 
             # Создаем или обновляем пользователя в базе
-            db.create_or_update_user(user_data)
+            await db.create_or_update_user(user_data)
 
             # Получаем информацию о пользователе
-            user_info = db.get_user(user_id)
+            user_info = await db.get_user(user_id)
             display_name = user_data_extractor.get_display_name(user_data)
             free_solutions = user_info['free_solutions'] if user_info else 3
 
@@ -202,7 +202,8 @@ class MathBot:
             problem_text = update.message.text
 
             # Проверяем баланс
-            if not db.use_solution(user_id):
+            if not await db.use_solution(user_id):
+                current_balance = await db.get_user_balance(user_id)
                 await update.message.reply_text(
                     BOT_MESSAGES['no_solutions'],
                     parse_mode=ParseMode.MARKDOWN,
@@ -234,7 +235,7 @@ class MathBot:
                     'processing_time': solution_result.get('processing_time', 0),
                     'success': True
                 }
-                db.save_solution(solution_data)
+                await db.save_solution(solution_data)
 
                 # Получаем клавиатуру для результата
                 keyboard = bot_keyboard.get_solution_result_keyboard()  # Без параметра, так как solution_id не передается
@@ -263,7 +264,7 @@ class MathBot:
             user_id = user_data['user_id']
 
             # Проверяем баланс
-            if not db.use_solution(user_id):
+            if not await db.use_solution(user_id):
                 await update.message.reply_text(
                     BOT_MESSAGES['no_solutions'],
                     parse_mode=ParseMode.MARKDOWN
@@ -307,7 +308,7 @@ class MathBot:
                     'processing_time': solution_result.get('processing_time', 0),
                     'success': True
                 }
-                db.save_solution(solution_data)
+                await db.save_solution(solution_data)
 
                 solution_message = message_formatter.format_solution_message(solution_data)
                 keyboard = bot_keyboard.get_solution_result_keyboard()
@@ -326,9 +327,10 @@ class MathBot:
 
     # Дополнительные методы (упрощенные)
     async def show_balance(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Показать баланс"""
+        """Показать баланс (асинхронно)"""
         user_data = user_data_extractor.extract_user_data(update)
-        balance_data = db.get_user_balance(user_data['user_id'])
+        # Добавлен await перед вызовом базы данных
+        balance_data = await db.get_user_balance(user_data['user_id'])
         username = user_data_extractor.get_display_name(user_data)
 
         balance_message = message_formatter.format_balance_message(balance_data, username)
@@ -340,28 +342,17 @@ class MathBot:
             reply_markup=keyboard
         )
 
+
     async def show_history(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Показать историю"""
+        """Показать историю (асинхронно)"""
         user_data = user_data_extractor.extract_user_data(update)
-        history_data = db.get_user_history(user_data['user_id'])
+        # Добавлен await перед вызовом базы данных
+        history_data = await db.get_user_history(user_data['user_id'])
         history_message = message_formatter.format_history_message(history_data)
 
         await update.message.reply_text(
             history_message,
             parse_mode=ParseMode.MARKDOWN
-        )
-
-    async def show_examples(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Показать примеры"""
-        keyboard = bot_keyboard.get_examples_keyboard()
-        examples_text = "🎓 *Примеры задач:*\n\n" + "\n".join(
-            f"{i + 1}. {example}" for i, example in enumerate(EXAMPLE_PROBLEMS[:3])
-        )
-
-        await update.message.reply_text(
-            examples_text,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=keyboard
         )
 
     async def show_subscriptions(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -422,7 +413,7 @@ class MathBot:
                 'language_code': query.from_user.language_code or 'ru'
             }
 
-            balance_data = db.get_user_balance(user_data['user_id'])
+            balance_data = await db.get_user_balance(user_data['user_id'])
             username = user_data_extractor.get_display_name(user_data)
 
             balance_message = message_formatter.format_balance_message(balance_data, username)
@@ -498,9 +489,7 @@ class MathBot:
             self.application = Application.builder().token(self.token).build()
             self.setup_handlers()
 
-            print("🤖 МатБот запущен!")
-            print("📱 Используйте /start в Telegram")
-
+            print("МатБот успешно запущен!")
             self.application.run_polling()
 
         except Exception as e:
@@ -513,6 +502,7 @@ def main():
     if not TELEGRAM_TOKEN:
         raise ValueError("""
     ❌ TELEGRAM_TOKEN не найден!""")
+    asyncio.run(db.init_database())
     bot = MathBot(TELEGRAM_TOKEN)
     bot.run()
 
